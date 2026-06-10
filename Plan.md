@@ -40,12 +40,14 @@ Issue 2（プロダクトビジョン・Trust Claims・スコープ・非目標�
 - 2026-06-10: 実装フェーズ開始（/feature フロー）。仕様書 `docs/specs/2026-06-10-zerokey-family-phase1-core.md` 作成、役割別 Issue 5〜9 作成。packages/backend（Hono + bun:sqlite + Ed25519）と packages/frontend（Vite + React + WebCrypto）の土台を固定し、PM / Designer / QA / User / バックエンド開発 / フロントエンド開発の 6 エージェントを並列起動。
 - 2026-06-10: 6 エージェント完了。バックエンド 48 テスト・フロントエンド 82 テスト全 pass（モックなし: 実 SQLite / 実 WebCrypto / 実 HTTP / 実レンダリング）。typecheck・build・biome・harness 全 Green。canonical 形式（11 キー辞書順）の両側整合を確認。実装で確定した collecting / waiting 状態と解除署名ペイロードを仕様書へ反映。フォローアップ 3 件追加（W-07/W-09 画面、メンバー一覧 API、User フィードバック文言反映）。
 - 2026-06-10: 実装レビュー（バックエンド・フロントエンド 2 ファインダー）で high 6 件を含む 14 件を検出し修正。バックエンド: 停止中 circle の waiting→approved 昇格、承認者と対象メンバーの未検証、検証 await 中の TOCTOU、期限の 10 分〜24 時間範囲強制（60 テストへ増加）。フロントエンド: レスポンス封筒の unwrap 漏れ（requests / members / circles / invites / devices / stop / release）、フィールド名契約不一致、承認直後のクラッシュ、取り消しボディ欠落、偽の署名日時、collecting / waiting 専用画面、技術エラー文言の排除（112 テストへ増加）。low 2 件（送金先実績の金額条件、検証失敗 terminal の妨害耐性）は製品判断としてフォローアップ化。
+- 2026-06-10: CI の safe-chain 最小パッケージ年齢チェックで browserslist の推移的依存 2 件がブロックされ失敗 → root overrides で範囲下限の安定バージョンに固定して解消。PR #4 の本文を最終状態に更新、CI Green（ci / GitGuardian）。
 
 #### 振り返り
 
-- **問題**: PostToolUse フック（biome 自動整形）が `/bin/sh` で bash 固有構文（`[[ ]]` と `=~`）を実行しており、すべての Write/Edit で構文エラーを出していた。本タスクは Markdown のみなので実害はなかった。
-- **根本原因**: フックコマンドが bash 前提で書かれ、`sh` 互換性が検証されていない。
-- **予防策**: フォローアップとして記録し、別 PR で `bash -c` 明示または POSIX 構文への書き換えを行う。
+- **問題 1**: PostToolUse フック（biome 自動整形）が `/bin/sh` で bash 固有構文（`[[ ]]` と `=~`）を実行しており、すべての Write/Edit で構文エラーを出していた。Markdown 編集には実害がなく、TypeScript の整形は手動の `biome check --write` で代替した。
+- **問題 2**: 仕様書だけを共有して並列実装したため、バックエンドが具体化した API 契約（レスポンス封筒・フィールド名・ボディキー）とフロントエンドの想定が乖離し、統合レビューで high 4 件の契約不一致が出た。
+- **根本原因**: フックは bash 前提で書かれ `sh` 互換性が未検証だった。並列実装では API 契約の機械検証（OpenAPI 等の共有スキーマ）がなく、仕様書の自然言語記述が唯一の合意点だった。
+- **予防策**: フック修正をフォローアップ化（F-GSC606）。統合フェーズに「契約の正本はバックエンド実装」と明記したレビューゲートを置き、実 HTTP サーバーに対する契約テストをフロントエンドに追加した。次回は共有スキーマか契約テストの先行作成を仕様フェーズに含める。
 
 ### Claude Code ハーネス近代化（最新モデル・最新プラクティス対応） - 2026-06-10
 
