@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import type { RequestRecord } from './api';
 import {
   CANONICAL_KEYS,
   canonicalize,
@@ -83,13 +84,13 @@ describe('署名ペイロードの canonical 化', () => {
     expect(new TextDecoder().decode(bytes)).toBe(canonicalize(basePayload));
   });
 
-  it('確認要求レコードと応答種別からペイロードを構築できる', () => {
+  it('確認要求レコード（requesterMemberId / targetMemberId）と応答種別からペイロードを構築できる', () => {
     const payload = payloadFromRequest(
       {
         id: basePayload.requestId,
         circleId: basePayload.circleId,
-        requesterId: basePayload.requesterId,
-        targetId: basePayload.targetId,
+        requesterMemberId: basePayload.requesterId,
+        targetMemberId: basePayload.targetId,
         subject: basePayload.subject,
         amount: basePayload.amount,
         beneficiary: basePayload.beneficiary,
@@ -100,5 +101,33 @@ describe('署名ペイロードの canonical 化', () => {
       'approve'
     );
     expect(payload).toEqual(basePayload);
+  });
+
+  it('API のレコードから構築したペイロードは 11 キーすべて defined である', () => {
+    // バックエンド（app.ts toRequestJson）が返すレコードと同じ形。
+    const record: RequestRecord = {
+      id: basePayload.requestId,
+      circleId: basePayload.circleId,
+      requesterMemberId: basePayload.requesterId,
+      targetMemberId: basePayload.targetId,
+      subject: basePayload.subject,
+      amount: basePayload.amount,
+      beneficiary: basePayload.beneficiary,
+      reason: basePayload.reason,
+      deadline: basePayload.deadline,
+      nonce: basePayload.nonce,
+      status: 'unanswered',
+      secondApprovalRequired: true,
+      waitRequired: true,
+      waitUntil: null,
+      createdAt: '2026-06-10T12:00:00.000Z',
+    };
+    const payload = payloadFromRequest(record, 'approve');
+    expect(CANONICAL_KEYS).toHaveLength(11);
+    for (const key of CANONICAL_KEYS) {
+      expect(payload[key]).toBeDefined();
+    }
+    expect(payload.requesterId).toBe(basePayload.requesterId);
+    expect(payload.targetId).toBe(basePayload.targetId);
   });
 });

@@ -51,12 +51,17 @@ export function encodeCanonical(payload: SignaturePayload): Uint8Array {
   return new TextEncoder().encode(canonicalize(payload));
 }
 
-/** 確認要求レコードに対応するフィールドの最小集合。 */
+/**
+ * 確認要求レコードに対応するフィールドの最小集合。
+ * フィールド名はバックエンド API のレコード（requesterMemberId / targetMemberId）に
+ * 合わせる。canonical ペイロード側のキー名（requesterId / targetId）は
+ * サーバーの canonicalResponsePayload と互換のまま変えない。
+ */
 export interface SignableRequest {
   id: string;
   circleId: string;
-  requesterId: string;
-  targetId: string;
+  requesterMemberId: string;
+  targetMemberId: string;
   subject: string;
   amount: number;
   beneficiary: string;
@@ -79,8 +84,8 @@ export function payloadFromRequest(
     nonce: request.nonce,
     reason: request.reason,
     requestId: request.id,
-    requesterId: request.requesterId,
+    requesterId: request.requesterMemberId,
     subject: request.subject,
-    targetId: request.targetId,
+    targetId: request.targetMemberId,
   };
 }

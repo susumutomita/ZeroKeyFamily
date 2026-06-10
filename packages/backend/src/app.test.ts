@@ -957,6 +957,74 @@ describe('緊急停止', () => {
     expect(await getCircleStatus(ctx.app, family.circleId)).toBe('stopped');
   });
 
+  it('waiting 中に緊急停止された要求は待機満了後の取得でも approved にならない', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    expect(request.waitRequired).toBe(true);
+    const approve = await respondWith(ctx, request, family.target, 'approve');
+    expect(approve.status).toBe(200);
+    const stop = await postJson(
+      ctx.app,
+      `/api/circles/${family.circleId}/stop`,
+      {
+        memberId: family.requester.memberId,
+      }
+    );
+    expect(stop.status).toBe(200);
+    ctx.clock.advanceMinutes(30);
+    const refreshed = await getRequestJson(ctx.app, request.id);
+    expect(refreshed.status).toBe('waiting');
+    expect(refreshed.status).not.toBe('approved');
+    const row = ctx.db
+      .query<{ status: string }, [string]>(
+        'SELECT status FROM requests WHERE id = ?'
+      )
+      .get(request.id);
+    expect(row?.status).not.toBe('approved');
+  });
+
+  it('停止解除後の最初の取得で待機満了済みの waiting 要求は approved へ確定する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    await respondWith(ctx, request, family.target, 'approve');
+    const stopRes = await postJson(
+      ctx.app,
+      `/api/circles/${family.circleId}/stop`,
+      { memberId: family.requester.memberId }
+    );
+    const { stopEvent } = (await stopRes.json()) as {
+      stopEvent: { id: string };
+    };
+    ctx.clock.advanceMinutes(30);
+    const duringStop = await getRequestJson(ctx.app, request.id);
+    expect(duringStop.status).toBe('waiting');
+    const payload = canonicalReleasePayload({
+      circleId: family.circleId,
+      stopEventId: stopEvent.id,
+    });
+    const release = await postJson(
+      ctx.app,
+      `/api/circles/${family.circleId}/release`,
+      {
+        signatures: [
+          {
+            deviceId: family.requester.deviceId,
+            signature: await signEd25519(family.requester.privateKey, payload),
+          },
+          {
+            deviceId: family.target.deviceId,
+            signature: await signEd25519(family.target.privateKey, payload),
+          },
+        ],
+      }
+    );
+    expect(release.status).toBe(200);
+    const afterRelease = await getRequestJson(ctx.app, request.id);
+    expect(afterRelease.status).toBe('approved');
+  });
+
   it('解除後は確認要求の承認が再び成立する', async () => {
     const ctx = createTestContext();
     const family = await setupFamily(ctx);
@@ -992,5 +1060,181 @@ describe('緊急停止', () => {
     expect(res.status).toBe(200);
     const refreshed = await getRequestJson(ctx.app, request.id);
     expect(refreshed.status).toBe('approved');
+  });
+});
+
+describe('応答者と対象メンバーの関係検証', () => {
+  it('対象以外のメンバーの承認署名だけでは approved にならない', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx, 3);
+    const other = mustGet(family.users[2], 'other member');
+    await buildApprovedHistory(ctx, family, '実績済み銀行 0000007');
+    const request = await createRequest(ctx, family, {
+      beneficiary: '実績済み銀行 0000007',
+    });
+    const res = await respondWith(ctx, request, other, 'approve');
+    expect(res.status).toBe(403);
+    const refreshed = await getRequestJson(ctx.app, request.id);
+    expect(refreshed.status).toBe('unanswered');
+    expect(refreshed.status).not.toBe('approved');
+  });
+
+  it('第 2 承認は対象本人の承認が先行している場合のみ数えられる', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx, 3);
+    const second = mustGet(family.users[2], 'second approver');
+    await buildApprovedHistory(ctx, family, '実績済み銀行 0000008');
+    const request = await createRequest(ctx, family, {
+      amount: 100000,
+      beneficiary: '実績済み銀行 0000008',
+    });
+    // target 本人の承認が無い状態では第 2 承認として受理しない。
+    const early = await respondWith(ctx, request, second, 'approve');
+    expect(early.status).toBe(403);
+    let state = await getRequestJson(ctx.app, request.id);
+    expect(state.status).toBe('unanswered');
+    expect(state.status).not.toBe('approved');
+    // target 本人の承認が先行すれば第 2 承認として数えられる。
+    const targetRes = await respondWith(ctx, request, family.target, 'approve');
+    expect(targetRes.status).toBe(200);
+    const late = await respondWith(ctx, request, second, 'approve');
+    expect(late.status).toBe(200);
+    state = await getRequestJson(ctx.app, request.id);
+    expect(state.status).toBe('approved');
+  });
+
+  it('対象以外の circle メンバーの拒否署名は受理され rejected に確定する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx, 3);
+    const other = mustGet(family.users[2], 'other member');
+    const request = await createRequest(ctx, family);
+    const res = await respondWith(ctx, request, other, 'reject');
+    expect(res.status).toBe(200);
+    const refreshed = await getRequestJson(ctx.app, request.id);
+    expect(refreshed.status).toBe('rejected');
+  });
+});
+
+describe('署名検証中の競合 (TOCTOU)', () => {
+  it('署名検証と並行して取り消された要求は approved で上書きされない', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    await buildApprovedHistory(ctx, family, '実績済み銀行 0000010');
+    const request = await createRequest(ctx, family, {
+      beneficiary: '実績済み銀行 0000010',
+    });
+    const payload = responsePayloadFor(request, 'approve');
+    const signature = await signEd25519(family.target.privateKey, payload);
+    // respond が verifyEd25519 を await している間に cancel が完了する
+    // 順序を、同一ティックでの並行起動により再現する。
+    const respondPromise = postJson(
+      ctx.app,
+      `/api/requests/${request.id}/respond`,
+      { deviceId: family.target.deviceId, kind: 'approve', signature }
+    );
+    const cancelPromise = postJson(
+      ctx.app,
+      `/api/requests/${request.id}/cancel`,
+      { requesterMemberId: family.requester.memberId }
+    );
+    const [respondRes, cancelRes] = await Promise.all([
+      respondPromise,
+      cancelPromise,
+    ]);
+    expect(cancelRes.status).toBe(200);
+    expect(respondRes.status).toBe(409);
+    const row = ctx.db
+      .query<{ status: string }, [string]>(
+        'SELECT status FROM requests WHERE id = ?'
+      )
+      .get(request.id);
+    expect(row?.status).not.toBe('approved');
+    expect(row?.status).toBe('invalidated');
+  });
+
+  it('署名検証と並行して緊急停止された circle では approved が書き込まれない', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    await buildApprovedHistory(ctx, family, '実績済み銀行 0000011');
+    const request = await createRequest(ctx, family, {
+      beneficiary: '実績済み銀行 0000011',
+    });
+    const payload = responsePayloadFor(request, 'approve');
+    const signature = await signEd25519(family.target.privateKey, payload);
+    const respondPromise = postJson(
+      ctx.app,
+      `/api/requests/${request.id}/respond`,
+      { deviceId: family.target.deviceId, kind: 'approve', signature }
+    );
+    const stopPromise = postJson(
+      ctx.app,
+      `/api/circles/${family.circleId}/stop`,
+      { memberId: family.requester.memberId }
+    );
+    const [respondRes, stopRes] = await Promise.all([
+      respondPromise,
+      stopPromise,
+    ]);
+    expect(stopRes.status).toBe(200);
+    expect(respondRes.status).toBe(409);
+    const row = ctx.db
+      .query<{ status: string }, [string]>(
+        'SELECT status FROM requests WHERE id = ?'
+      )
+      .get(request.id);
+    expect(row?.status).not.toBe('approved');
+  });
+});
+
+describe('回答期限の範囲検証', () => {
+  it('現在時刻から 10 分未満の期限は 400 で拒否する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const res = await postJson(
+      ctx.app,
+      '/api/requests',
+      requestBody(ctx, family, { deadline: deadlineIn(ctx.clock, 9) })
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('現在時刻から 10 分ちょうどの期限は許可する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family, {
+      deadline: deadlineIn(ctx.clock, 10),
+    });
+    expect(request.status).toBe('unanswered');
+  });
+
+  it('現在時刻から 24 時間ちょうどの期限は許可する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family, {
+      deadline: deadlineIn(ctx.clock, 24 * 60),
+    });
+    expect(request.status).toBe('unanswered');
+  });
+
+  it('現在時刻から 24 時間を超える期限は 400 で拒否する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const res = await postJson(
+      ctx.app,
+      '/api/requests',
+      requestBody(ctx, family, { deadline: deadlineIn(ctx.clock, 24 * 60 + 1) })
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('過去の期限は 400 で拒否する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const res = await postJson(
+      ctx.app,
+      '/api/requests',
+      requestBody(ctx, family, { deadline: deadlineIn(ctx.clock, -5) })
+    );
+    expect(res.status).toBe(400);
   });
 });

@@ -17,6 +17,10 @@ export interface AppDeps {
 const HIGH_RISK_AMOUNT_THRESHOLD = 100_000;
 const HIGH_RISK_WAIT_MS = 30 * 60_000;
 const REMOTE_INVITE_WAIT_MS = 48 * 60 * 60_000;
+// 回答期限は作成時点から 10 分以上 24 時間以内
+// （docs/product/failure-and-offline-behaviors.md の既定値・変更範囲）。
+const MIN_DEADLINE_OFFSET_MS = 10 * 60_000;
+const MAX_DEADLINE_OFFSET_MS = 24 * 60 * 60_000;
 
 const TERMINAL_REQUEST_STATUSES = new Set([
   'approved',
@@ -161,6 +165,12 @@ export function createApp(deps: AppDeps): Hono {
       row.high_risk_wait_until !== null &&
       nowMs() >= Date.parse(row.high_risk_wait_until)
     ) {
+      // 停止中の circle では待機満了でも approved へ昇格させない。
+      // 停止解除後の最初の読み取りで（wait_until 経過済みなら）昇格する。
+      const circle = getCircle(row.circle_id);
+      if (!circle || circle.status === 'stopped') {
+        return row;
+      }
       setRequestStatus(row.id, 'approved');
       return { ...row, status: 'approved' };
     }
@@ -175,6 +185,20 @@ export function createApp(deps: AppDeps): Hono {
          WHERE r.request_id = ? AND r.kind = 'approve' AND r.verified = 1`
       )
       .all(requestId).length;
+
+  const hasVerifiedApprovalFrom = (
+    requestId: string,
+    memberId: string
+  ): boolean =>
+    db
+      .query<{ ok: number }, [string, string]>(
+        `SELECT 1 AS ok
+         FROM responses r JOIN devices d ON d.id = r.device_id
+         WHERE r.request_id = ? AND d.member_id = ?
+           AND r.kind = 'approve' AND r.verified = 1
+         LIMIT 1`
+      )
+      .get(requestId, memberId) !== null;
 
   const recordResponse = (
     requestId: string,
@@ -427,6 +451,15 @@ export function createApp(deps: AppDeps): Hono {
     if (!isNonEmptyString(deadline) || Number.isNaN(Date.parse(deadline))) {
       return c.json({ error: 'deadline_required' }, 400);
     }
+    // 回答期限は 10 分以上 24 時間以内（境界値は許可）。クライアント検証に
+    // 依存せずサーバー側で強制する。
+    const deadlineOffsetMs = Date.parse(deadline) - nowMs();
+    if (
+      deadlineOffsetMs < MIN_DEADLINE_OFFSET_MS ||
+      deadlineOffsetMs > MAX_DEADLINE_OFFSET_MS
+    ) {
+      return c.json({ error: 'deadline_out_of_range' }, 400);
+    }
     const circle = getCircle(circleId);
     if (!circle) {
       return c.json({ error: 'circle_not_found' }, 404);
@@ -534,6 +567,18 @@ export function createApp(deps: AppDeps): Hono {
     if (device.member_id === request.requester_member_id) {
       return c.json({ error: 'requester_cannot_respond' }, 403);
     }
+    // 承認は target_member_id 本人の登録端末のみ有効。target 以外のメンバーは
+    // 高リスクの第 2 承認（target 本人の有効な承認が先行している場合）に限り
+    // 受理する。拒否は requester 以外の circle メンバーなら誰でもよい
+    // （user-journeys.md フロー 4「いずれかが拒否」）。
+    if (kind === 'approve' && device.member_id !== request.target_member_id) {
+      if (request.high_risk_second_approval !== 1) {
+        return c.json({ error: 'not_target_member' }, 403);
+      }
+      if (!hasVerifiedApprovalFrom(request.id, request.target_member_id)) {
+        return c.json({ error: 'target_approval_required' }, 403);
+      }
+    }
     // 同一署名の再送（リプレイ）は状態を変えずに拒否する。
     const duplicated = db
       .query<{ ok: number }, [string, string]>(
@@ -570,6 +615,19 @@ export function createApp(deps: AppDeps): Hono {
       );
     }
     const verified = await verifyEd25519(device.public_key, payload, signature);
+    // TOCTOU 対策: 検証 (await) 中に走った取り消し・期限確定・緊急停止を
+    // 後続の状態書き込みで上書きしない。書き込み直前に再読込して確認する。
+    const latest = getRequest(request.id);
+    if (!latest || TERMINAL_REQUEST_STATUSES.has(latest.status)) {
+      return c.json(
+        { error: 'request_finalized', status: latest?.status ?? 'unknown' },
+        409
+      );
+    }
+    const latestCircle = getCircle(request.circle_id);
+    if (!latestCircle || latestCircle.status === 'stopped') {
+      return c.json({ error: 'circle_stopped', status: latest.status }, 409);
+    }
     if (!verified) {
       recordResponse(request.id, device.id, kind, payload, signature, false);
       setRequestStatus(request.id, 'verification_failed');
@@ -586,11 +644,11 @@ export function createApp(deps: AppDeps): Hono {
       setRequestStatus(request.id, 'rejected');
       return c.json({ status: 'rejected' });
     }
-    if (request.status === 'waiting') {
+    if (latest.status === 'waiting') {
       // 待機中の追加承認は状態を変えない（approved を先行させない）。
       return c.json({
         status: 'waiting',
-        waitUntil: request.high_risk_wait_until,
+        waitUntil: latest.high_risk_wait_until,
       });
     }
     const approvals = countDistinctApprovers(request.id);

@@ -1,7 +1,12 @@
 import { useCallback, useState } from 'react';
-import { api, type RequestRecord } from './lib/api';
+import {
+  api,
+  cancelAndFetchRequest,
+  type RequestRecord,
+  respondAndFetchRequest,
+} from './lib/api';
 import { canonicalize, payloadFromRequest } from './lib/canonical';
-import { STANDARD_COPY } from './lib/copy';
+import { UI_COPY } from './lib/copy';
 import {
   exportPublicKeyBase64,
   getOrCreateKeyPair,
@@ -9,6 +14,7 @@ import {
   type KeyStore,
   signPayload,
 } from './lib/crypto';
+import { noticeForError } from './lib/notices';
 import {
   CreateRequestScreen,
   type RequestFormValues,
@@ -17,6 +23,7 @@ import { EmergencyStopScreen } from './screens/EmergencyStopScreen';
 import { HomeScreen, type RecentEntry } from './screens/HomeScreen';
 import { ReceiveApproveScreen } from './screens/ReceiveApproveScreen';
 import { ResultExpiredScreen } from './screens/ResultExpiredScreen';
+import { ResultInProgressScreen } from './screens/ResultInProgressScreen';
 import { ResultNotConfirmedScreen } from './screens/ResultNotConfirmedScreen';
 import { ResultUnansweredScreen } from './screens/ResultUnansweredScreen';
 import { ResultVerifiedScreen } from './screens/ResultVerifiedScreen';
@@ -32,6 +39,20 @@ const DEVICE_KEY_ID = 'this-device';
 const MEMBER_ID_STORAGE_KEY = 'zerokey-member-id';
 const DEVICE_ID_STORAGE_KEY = 'zerokey-device-id';
 const CIRCLE_ID_STORAGE_KEY = 'zerokey-circle-id';
+
+/** 確認相手の候補。招待機能が入るまでの暫定動線では空。 */
+const REQUEST_TARGETS: { id: string; name: string; relation?: string }[] = [];
+
+/**
+ * メンバー ID から表示名を解決する。
+ * リストに無い場合でも ID を人名として表示しない（「家族」で代替する）。
+ */
+export function resolveTargetName(
+  targets: readonly { id: string; name: string }[],
+  targetId: string
+): string {
+  return targets.find((target) => target.id === targetId)?.name ?? '家族';
+}
 
 interface AppProps {
   keyStore?: KeyStore;
@@ -73,12 +94,8 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
   const [notice, setNotice] = useState<string | null>(null);
 
   const showError = useCallback((error: unknown) => {
-    if (error instanceof TypeError) {
-      // fetch のネットワーク失敗（通信断）。
-      setNotice(STANDARD_COPY.offline);
-      return;
-    }
-    setNotice(error instanceof Error ? error.message : String(error));
+    // 生のエラーメッセージ（技術文言・JSON）を表示しない。
+    setNotice(noticeForError(error));
   }, []);
 
   const goHome = useCallback(() => {
@@ -107,8 +124,8 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
         ).toISOString();
         const request = await api.createRequest({
           circleId: self.circleId,
-          requesterId: self.memberId,
-          targetId: values.targetId,
+          requesterMemberId: self.memberId,
+          targetMemberId: values.targetId,
           subject: values.subject,
           amount: values.amount,
           beneficiary: values.beneficiary,
@@ -116,7 +133,12 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
           deadline,
         });
         setNotice(null);
-        setView({ name: 'result', request, targetName: values.targetId });
+        setView({
+          name: 'result',
+          request,
+          // メンバー ID を人名として表示しない。
+          targetName: resolveTargetName(REQUEST_TARGETS, values.targetId),
+        });
       } catch (error) {
         showError(error);
       }
@@ -131,7 +153,8 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
         const pair = await getOrCreateKeyPair(keyStore, DEVICE_KEY_ID);
         const canonical = canonicalize(payloadFromRequest(request, kind));
         const signature = await signPayload(pair.privateKey, canonical);
-        const updated = await api.respondToRequest(request.id, {
+        // respond のレスポンスは最小 JSON のため、完全なレコードを取り直す。
+        const updated = await respondAndFetchRequest(api, request.id, {
           deviceId: self.deviceId,
           kind,
           signature,
@@ -158,13 +181,19 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
   const handleCancelRequest = useCallback(
     async (request: RequestRecord, targetName: string) => {
       try {
-        const cancelled = await api.cancelRequest(request.id);
+        const self = await ensureSelfRegistered(keyStore);
+        // バックエンドは requesterMemberId をボディで必須にしている。
+        const cancelled = await cancelAndFetchRequest(
+          api,
+          request.id,
+          self.memberId
+        );
         setView({ name: 'result', request: cancelled, targetName });
       } catch (error) {
         showError(error);
       }
     },
-    [showError]
+    [keyStore, showError]
   );
 
   const handleStop = useCallback(async () => {
@@ -196,7 +225,7 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
       )}
       {view.name === 'create' && (
         <CreateRequestScreen
-          targets={[]}
+          targets={REQUEST_TARGETS}
           onSubmit={handleCreateRequest}
           onBack={goHome}
         />
@@ -237,7 +266,7 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
   );
 }
 
-function ResultView({
+export function ResultView({
   request,
   targetName,
   onClose,
@@ -262,8 +291,28 @@ function ResultView({
           amount={request.amount}
           beneficiary={request.beneficiary}
           reason={request.reason}
-          signedAt={new Date().toLocaleString('ja-JP')}
+          // バックエンドのレスポンスに応答日時が含まれないため、
+          // 閲覧時刻などの偽の時刻を署名日時として表示しない。
+          signedAt={UI_COPY.signedAtUnavailable}
           onClose={onClose}
+          onHelp={onHelp}
+        />
+      );
+    case 'collecting':
+      return (
+        <ResultInProgressScreen
+          kind="collecting"
+          onCancelRequest={onCancelRequest}
+          onRefresh={onRefresh}
+          onHelp={onHelp}
+        />
+      );
+    case 'waiting':
+      return (
+        <ResultInProgressScreen
+          kind="waiting"
+          onCancelRequest={onCancelRequest}
+          onRefresh={onRefresh}
           onHelp={onHelp}
         />
       );

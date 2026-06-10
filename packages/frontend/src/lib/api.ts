@@ -10,6 +10,8 @@ import type { ResponseKind } from './canonical';
 
 export type RequestStatus =
   | 'unanswered'
+  | 'collecting'
+  | 'waiting'
   | 'approved'
   | 'rejected'
   | 'expired'
@@ -49,10 +51,11 @@ export interface InviteRecord {
   confirmableAt?: string;
 }
 
+/** バックエンド POST /api/requests の契約（app.ts）に一致するフィールド名。 */
 export interface RequestInput {
   circleId: string;
-  requesterId: string;
-  targetId: string;
+  requesterMemberId: string;
+  targetMemberId: string;
   subject: string;
   amount: number;
   beneficiary: string;
@@ -60,11 +63,12 @@ export interface RequestInput {
   deadline: string;
 }
 
+/** バックエンド toRequestJson（app.ts）が返すレコードと同じ形。 */
 export interface RequestRecord {
   id: string;
   circleId: string;
-  requesterId: string;
-  targetId: string;
+  requesterMemberId: string;
+  targetMemberId: string;
   subject: string;
   amount: number;
   beneficiary: string;
@@ -72,14 +76,32 @@ export interface RequestRecord {
   deadline: string;
   nonce: string;
   status: RequestStatus;
-  highRiskSecondApproval: boolean;
-  highRiskWaitUntil: string | null;
+  secondApprovalRequired: boolean;
+  waitRequired: boolean;
+  waitUntil: string | null;
+  createdAt: string;
 }
 
 export interface RespondInput {
   deviceId: string;
   kind: ResponseKind;
   signature: string;
+}
+
+/**
+ * POST /api/requests/:id/respond の最小レスポンス。
+ * 金額などの完全なレコードは含まないため、結果画面にはそのまま渡さない。
+ */
+export interface RespondResult {
+  status: RequestStatus;
+  waitUntil?: string | null;
+  approvals?: number;
+  requiredApprovals?: number;
+}
+
+/** POST /api/requests/:id/cancel の最小レスポンス。 */
+export interface CancelResult {
+  status: RequestStatus;
 }
 
 export interface ReleaseSignature {
@@ -121,62 +143,157 @@ export class ApiClient {
     return (await response.json()) as T;
   }
 
-  createMember(input: MemberInput): Promise<MemberRecord> {
-    return this.request('POST', '/members', input);
+  /** レスポンスは `{ member, device }` 封筒なので unwrap して返す。 */
+  async createMember(input: MemberInput): Promise<MemberRecord> {
+    const body = await this.request<{
+      member: { id: string; name: string };
+      device: { id: string };
+    }>('POST', '/members', input);
+    return {
+      id: body.member.id,
+      name: body.member.name,
+      deviceId: body.device.id,
+    };
   }
 
-  createCircle(input: CircleInput): Promise<CircleRecord> {
-    return this.request('POST', '/circles', input);
+  /** レスポンスは `{ circle: {...} }` 封筒なので unwrap して返す。 */
+  async createCircle(input: CircleInput): Promise<CircleRecord> {
+    const body = await this.request<{ circle: CircleRecord }>(
+      'POST',
+      '/circles',
+      input
+    );
+    return body.circle;
   }
 
-  createInvite(input: InviteInput): Promise<InviteRecord> {
-    return this.request('POST', '/invites', input);
+  /** レスポンスは `{ invite: {...} }` 封筒なので unwrap して返す。 */
+  async createInvite(input: InviteInput): Promise<InviteRecord> {
+    const body = await this.request<{ invite: InviteRecord }>(
+      'POST',
+      '/invites',
+      input
+    );
+    return body.invite;
   }
 
-  confirmInvite(inviteId: string): Promise<InviteRecord> {
-    return this.request('POST', `/invites/${inviteId}/confirm`);
+  /** 確認のレスポンスは `{ invite: { id, status } }` のみを含む。 */
+  async confirmInvite(
+    inviteId: string
+  ): Promise<Pick<InviteRecord, 'id' | 'status'>> {
+    const body = await this.request<{
+      invite: Pick<InviteRecord, 'id' | 'status'>;
+    }>('POST', `/invites/${inviteId}/confirm`);
+    return body.invite;
   }
 
-  cancelInvite(inviteId: string): Promise<InviteRecord> {
-    return this.request('POST', `/invites/${inviteId}/cancel`);
+  /** 取り消しのレスポンスは `{ invite: { id, status } }` のみを含む。 */
+  async cancelInvite(
+    inviteId: string
+  ): Promise<Pick<InviteRecord, 'id' | 'status'>> {
+    const body = await this.request<{
+      invite: Pick<InviteRecord, 'id' | 'status'>;
+    }>('POST', `/invites/${inviteId}/cancel`);
+    return body.invite;
   }
 
-  createRequest(input: RequestInput): Promise<RequestRecord> {
-    return this.request('POST', '/requests', input);
+  /** レスポンスは `{ request: {...} }` 封筒なので unwrap して返す。 */
+  async createRequest(input: RequestInput): Promise<RequestRecord> {
+    const body = await this.request<{ request: RequestRecord }>(
+      'POST',
+      '/requests',
+      input
+    );
+    return body.request;
   }
 
-  getRequest(requestId: string): Promise<RequestRecord> {
-    return this.request('GET', `/requests/${requestId}`);
+  /** レスポンスは `{ request: {...} }` 封筒なので unwrap して返す。 */
+  async getRequest(requestId: string): Promise<RequestRecord> {
+    const body = await this.request<{ request: RequestRecord }>(
+      'GET',
+      `/requests/${requestId}`
+    );
+    return body.request;
   }
 
   respondToRequest(
     requestId: string,
     input: RespondInput
-  ): Promise<RequestRecord> {
+  ): Promise<RespondResult> {
     return this.request('POST', `/requests/${requestId}/respond`, input);
   }
 
-  cancelRequest(requestId: string): Promise<RequestRecord> {
-    return this.request('POST', `/requests/${requestId}/cancel`);
+  /** バックエンドは requesterMemberId をボディで必須にしている。 */
+  cancelRequest(
+    requestId: string,
+    input: { requesterMemberId: string }
+  ): Promise<CancelResult> {
+    return this.request('POST', `/requests/${requestId}/cancel`, input);
   }
 
-  revokeDevice(deviceId: string): Promise<{ id: string; status: string }> {
-    return this.request('POST', `/devices/${deviceId}/revoke`);
+  /** レスポンスは `{ device: {...} }` 封筒なので unwrap して返す。 */
+  async revokeDevice(
+    deviceId: string
+  ): Promise<{ id: string; status: string }> {
+    const body = await this.request<{
+      device: { id: string; status: string };
+    }>('POST', `/devices/${deviceId}/revoke`);
+    return body.device;
   }
 
-  stopCircle(
+  /** レスポンスは `{ circle, stopEvent }` 封筒。解除署名に使う stopEventId を返す。 */
+  async stopCircle(
     circleId: string,
     input: { memberId: string }
-  ): Promise<CircleRecord> {
-    return this.request('POST', `/circles/${circleId}/stop`, input);
+  ): Promise<{
+    id: string;
+    status: 'normal' | 'stopped';
+    stopEventId: string;
+  }> {
+    const body = await this.request<{
+      circle: { id: string; status: 'normal' | 'stopped' };
+      stopEvent: { id: string };
+    }>('POST', `/circles/${circleId}/stop`, input);
+    return {
+      id: body.circle.id,
+      status: body.circle.status,
+      stopEventId: body.stopEvent.id,
+    };
   }
 
-  releaseCircle(
+  /** バックエンドのボディキーは `signatures`。レスポンスは `{ circle }` 封筒。 */
+  async releaseCircle(
     circleId: string,
-    input: { releases: ReleaseSignature[] }
-  ): Promise<CircleRecord> {
-    return this.request('POST', `/circles/${circleId}/release`, input);
+    input: { signatures: ReleaseSignature[] }
+  ): Promise<{ id: string; status: 'normal' | 'stopped' }> {
+    const body = await this.request<{
+      circle: { id: string; status: 'normal' | 'stopped' };
+    }>('POST', `/circles/${circleId}/release`, input);
+    return body.circle;
   }
+}
+
+/**
+ * 署名付き応答を送ったあと、結果画面用の完全なレコードを取り直す。
+ * respond のレスポンスは最小 JSON（金額等を含まない）のため、
+ * そのまま結果画面に渡してはならない。
+ */
+export async function respondAndFetchRequest(
+  client: ApiClient,
+  requestId: string,
+  input: RespondInput
+): Promise<RequestRecord> {
+  await client.respondToRequest(requestId, input);
+  return client.getRequest(requestId);
+}
+
+/** 取り消しを送ったあと、結果画面用の完全なレコードを取り直す。 */
+export async function cancelAndFetchRequest(
+  client: ApiClient,
+  requestId: string,
+  requesterMemberId: string
+): Promise<RequestRecord> {
+  await client.cancelRequest(requestId, { requesterMemberId });
+  return client.getRequest(requestId);
 }
 
 /** 既定のクライアント。同一オリジンの `/api`（dev では vite proxy 経由）。 */

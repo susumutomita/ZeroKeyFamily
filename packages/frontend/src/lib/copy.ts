@@ -49,6 +49,16 @@ export const UI_COPY = {
   verifiedHeading: '確認できました',
   verifiedLimitation:
     'これは端末の署名の確認です。少しでも不安があれば、送金の前にもう一度直接話してください。',
+  // 署名日時がバックエンドから取得できない場合の表示（偽の時刻を出さない）
+  signedAtUnavailable: '取得できません',
+  // 確認進行中（collecting / waiting）
+  collectingHeading: 'ほかの家族の確認を待っています',
+  waitingHeading: '待ち時間中です',
+  inProgressCancelNote: 'この間はいつでも取り消せます。',
+  refreshStatusButton: '状態を確かめる',
+  // 通信断以外の処理失敗（生のエラー文言・JSON を出さない）
+  processFailedNotice:
+    '処理を完了できませんでした。確認できるまで、お金を送らないでください。',
   // W-05 / W-05b 応答なし・期限切れ
   unansweredHeading: 'まだ確認できていません',
   noResponseFrom: (name: string): string =>

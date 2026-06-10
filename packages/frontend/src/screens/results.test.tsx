@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { FORBIDDEN_COPY } from '../lib/copy';
 import { ResultExpiredScreen } from './ResultExpiredScreen';
+import { ResultInProgressScreen } from './ResultInProgressScreen';
 import { ResultNotConfirmedScreen } from './ResultNotConfirmedScreen';
 import { ResultUnansweredScreen } from './ResultUnansweredScreen';
 import { ResultVerifiedScreen } from './ResultVerifiedScreen';
@@ -120,6 +121,80 @@ describe('W-05b 結果表示（期限切れ）', () => {
 
   it('「タイムアウトしました」と表現しない', () => {
     expect(html).not.toContain('タイムアウト');
+  });
+
+  it('禁止文言を含まない', () => {
+    expectNoForbiddenCopy(html);
+  });
+});
+
+describe('結果表示（collecting: ほかの家族の確認待ち）', () => {
+  const html = renderToStaticMarkup(
+    <ResultInProgressScreen
+      kind="collecting"
+      onCancelRequest={() => {}}
+      onRefresh={() => {}}
+      onHelp={() => {}}
+    />
+  );
+
+  it('「ほかの家族の確認を待っています」を表示する', () => {
+    expect(html).toContain('ほかの家族の確認を待っています');
+  });
+
+  it('未確認なので「お金を送らないでください。」と行動を指示する', () => {
+    expect(html).toContain('お金を送らないでください。');
+  });
+
+  it('取り消し導線（このお願いを取り消す）がある', () => {
+    expect(html).toContain('このお願いを取り消す');
+  });
+
+  it('成功色・チェックマークを使わない', () => {
+    expect(html).not.toContain('✓');
+    expect(html).not.toContain('✔');
+    expect(html).not.toContain('status-heading--verified');
+  });
+
+  it('「応答がありません」と表示しない', () => {
+    expect(html).not.toContain('応答がありません');
+  });
+
+  it('禁止文言を含まない', () => {
+    expectNoForbiddenCopy(html);
+  });
+});
+
+describe('結果表示（waiting: 待ち時間中）', () => {
+  const html = renderToStaticMarkup(
+    <ResultInProgressScreen
+      kind="waiting"
+      onCancelRequest={() => {}}
+      onRefresh={() => {}}
+      onHelp={() => {}}
+    />
+  );
+
+  it('「待ち時間中です」を表示する', () => {
+    expect(html).toContain('待ち時間中です');
+  });
+
+  it('この間はいつでも取り消せることを伝える', () => {
+    expect(html).toContain('この間はいつでも取り消せます。');
+  });
+
+  it('取り消し導線（このお願いを取り消す）がある', () => {
+    expect(html).toContain('このお願いを取り消す');
+  });
+
+  it('成功色・チェックマークを使わない', () => {
+    expect(html).not.toContain('✓');
+    expect(html).not.toContain('✔');
+    expect(html).not.toContain('status-heading--verified');
+  });
+
+  it('「応答がありません」と表示しない', () => {
+    expect(html).not.toContain('応答がありません');
   });
 
   it('禁止文言を含まない', () => {

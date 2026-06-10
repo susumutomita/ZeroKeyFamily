@@ -39,6 +39,7 @@ Issue 2（プロダクトビジョン・Trust Claims・スコープ・非目標�
 - 2026-06-10: code-review（2 ファインダー並列）で文書間矛盾 9 件を検出し修正（応答なし/期限切れの状態分離、署名束縛フィールドへの理由追加、ロードマップのゲート分離、W-04/W-05/W-05b/W-09 の補完、フロー 4 独立判定、フロー 7 状態遷移図）。security-review は指摘 0 件。draft PR #4 作成、CI Green。
 - 2026-06-10: 実装フェーズ開始（/feature フロー）。仕様書 `docs/specs/2026-06-10-zerokey-family-phase1-core.md` 作成、役割別 Issue 5〜9 作成。packages/backend（Hono + bun:sqlite + Ed25519）と packages/frontend（Vite + React + WebCrypto）の土台を固定し、PM / Designer / QA / User / バックエンド開発 / フロントエンド開発の 6 エージェントを並列起動。
 - 2026-06-10: 6 エージェント完了。バックエンド 48 テスト・フロントエンド 82 テスト全 pass（モックなし: 実 SQLite / 実 WebCrypto / 実 HTTP / 実レンダリング）。typecheck・build・biome・harness 全 Green。canonical 形式（11 キー辞書順）の両側整合を確認。実装で確定した collecting / waiting 状態と解除署名ペイロードを仕様書へ反映。フォローアップ 3 件追加（W-07/W-09 画面、メンバー一覧 API、User フィードバック文言反映）。
+- 2026-06-10: 実装レビュー（バックエンド・フロントエンド 2 ファインダー）で high 6 件を含む 14 件を検出し修正。バックエンド: 停止中 circle の waiting→approved 昇格、承認者と対象メンバーの未検証、検証 await 中の TOCTOU、期限の 10 分〜24 時間範囲強制（60 テストへ増加）。フロントエンド: レスポンス封筒の unwrap 漏れ（requests / members / circles / invites / devices / stop / release）、フィールド名契約不一致、承認直後のクラッシュ、取り消しボディ欠落、偽の署名日時、collecting / waiting 専用画面、技術エラー文言の排除（112 テストへ増加）。low 2 件（送金先実績の金額条件、検証失敗 terminal の妨害耐性）は製品判断としてフォローアップ化。
 
 #### 振り返り
 
