@@ -23,7 +23,9 @@
     "packages/*"
   ],
   "overrides": {
-    "hono": "4.12.23"
+    "hono": "4.12.23",
+    "baseline-browser-mapping": "2.10.12",
+    "electron-to-chromium": "1.5.328"
   },
   "scripts": {
     "dev": "bun run --filter '*' dev",
