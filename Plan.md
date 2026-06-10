@@ -1,5 +1,48 @@
 # Plan.md
 
+### ZeroKey Family プロダクト定義ドキュメント（Issue 1 / 2 / 3） - 2026-06-10
+
+#### 目的
+
+Issue 2（プロダクトビジョン・Trust Claims・スコープ・非目標）と Issue 3（エンドツーエンドのユーザージャーニーと誤用耐性 UX）の成果物を `docs/product/` 配下に作成する。Issue 1（商用リリースロードマップ）はリリースゲート文書として `docs/product/roadmap.md` に整備する。
+
+- Issue 1: https://github.com/susumutomita/ZeroKeyFamily/issues/1
+- Issue 2: https://github.com/susumutomita/ZeroKeyFamily/issues/2
+- Issue 3: https://github.com/susumutomita/ZeroKeyFamily/issues/3
+
+#### 制約
+
+- 作業順序: ドキュメント更新 → リファクタリング → 機能追加。本タスクはドキュメントのみ。
+- ドキュメント規則（文末「。」、日本語と半角英数字の間に半角スペース）に従う。
+- Issue の完了条件を文書側で満たす: 「応答なし」を本人確認成功として扱わない、危険な要求で金額・送金先・理由を省略できない、各フローに開始・終了・失敗条件を定義する。
+- ゲート（architecture-harness → make before-commit）を全て Green にするまで未完了。
+
+#### タスク
+
+1. Plan.md に本計画を追記する。
+2. Issue 2 成果物: `docs/product/vision.md` / `trust-claims.md` / `scope-and-non-goals.md` / `glossary.md`。
+3. Issue 3 成果物: `docs/product/user-journeys.md` / `wireframes.md` / `safety-copy-guide.md` / `failure-and-offline-behaviors.md` / `usability-test-plan.md`。
+4. Issue 1 成果物: `docs/product/roadmap.md`（リリースゲートチェックリストと各 Issue へのリンク）。
+5. ゲート実行 → コミット → push → draft PR 作成。
+
+#### 検証手順
+
+- `bun scripts/architecture-harness.ts --staged --fail-on=error` が Green。
+- `make before-commit` が Green。
+- Issue 2 / 3 の完了条件チェックボックスに対応する記述が各文書に存在する。
+
+#### 進捗ログ
+
+- 2026-06-10: ブランチ `claude/goal-issues-implementation-o13b64` で着手。Issue 3 件を確認し、ドキュメント成果物の構成を決定。
+- 2026-06-10: `docs/product/` に 10 文書を作成。Issue 2（vision / trust-claims / scope-and-non-goals / glossary）、Issue 3（user-journeys / wireframes / safety-copy-guide / failure-and-offline-behaviors / usability-test-plan）、Issue 1（roadmap）。
+- 2026-06-10: scope 外の発見 2 件をフォローアップ記録。README が typescript-template のままで ZeroKey Family を反映していない件、PostToolUse フックが /bin/sh で bash 構文を使い常にエラーになる件。
+
+#### 振り返り
+
+- **問題**: PostToolUse フック（biome 自動整形）が `/bin/sh` で bash 固有構文（`[[ ]]` と `=~`）を実行しており、すべての Write/Edit で構文エラーを出していた。本タスクは Markdown のみなので実害はなかった。
+- **根本原因**: フックコマンドが bash 前提で書かれ、`sh` 互換性が検証されていない。
+- **予防策**: フォローアップとして記録し、別 PR で `bash -c` 明示または POSIX 構文への書き換えを行う。
+
 ### Claude Code ハーネス近代化（最新モデル・最新プラクティス対応） - 2026-06-10
 
 #### 目的
