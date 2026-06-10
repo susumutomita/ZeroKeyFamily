@@ -43,7 +43,7 @@ docs/product/ の正本文書群（[vision](../product/vision.md) / [trust-claim
 - `circles` — id, name, status ('normal' | 'stopped'), created_at。
 - `circle_members` — circle_id, member_id, joined_at, left_at。
 - `invites` — id, circle_id, inviter_member_id, kind ('qr' | 'remote'), status ('pending' | 'waiting' | 'confirmed' | 'cancelled'), created_at, confirmable_at（remote は作成 + 48h）。
-- `requests` — id, circle_id, requester_member_id, target_member_id, subject, amount, beneficiary, reason, deadline, nonce, status ('unanswered' | 'approved' | 'rejected' | 'expired' | 'verification_failed' | 'invalidated'), high_risk_second_approval (bool), high_risk_wait_until (nullable), created_at。
+- `requests` — id, circle_id, requester_member_id, target_member_id, subject, amount, beneficiary, reason, deadline, nonce, status ('unanswered' | 'collecting' | 'waiting' | 'approved' | 'rejected' | 'expired' | 'verification_failed' | 'invalidated'), high_risk_second_approval (bool), high_risk_wait_required (bool), high_risk_wait_until (nullable), created_at。`collecting` は高リスク要求で必要署名が揃うまでの収集状態、`waiting` は必要署名が揃ってから 30 分待機の満了までの状態（いずれも approved を先行して返さない）。
 - `responses` — id, request_id, device_id, kind ('approve' | 'reject'), payload (canonical JSON), signature (base64), verified (bool), created_at。
 - `stop_events` / `stop_releases` — 緊急停止の発動・解除（解除署名 2 件、発動者以外を含む）。
 
@@ -56,6 +56,8 @@ docs/product/ の正本文書群（[vision](../product/vision.md) / [trust-claim
 ```
 
 サーバーは保存済み要求からこの canonical 文字列を再構築して検証する（クライアント提示のペイロードを信頼しない）。
+
+緊急停止の解除署名は、キー辞書順の `{"circleId":"...","kind":"release","stopEventId":"..."}` を同形式で署名する（stopEventId を束縛し、別の停止イベントへの流用を防ぐ）。
 
 ### API エンドポイント（Hono、`/api` 配下）
 
