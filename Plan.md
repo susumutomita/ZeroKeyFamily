@@ -36,6 +36,8 @@ Issue 2（プロダクトビジョン・Trust Claims・スコープ・非目標�
 - 2026-06-10: ブランチ `claude/goal-issues-implementation-o13b64` で着手。Issue 3 件を確認し、ドキュメント成果物の構成を決定。
 - 2026-06-10: `docs/product/` に 10 文書を作成。Issue 2（vision / trust-claims / scope-and-non-goals / glossary）、Issue 3（user-journeys / wireframes / safety-copy-guide / failure-and-offline-behaviors / usability-test-plan）、Issue 1（roadmap）。
 - 2026-06-10: scope 外の発見 2 件をフォローアップ記録。README が typescript-template のままで ZeroKey Family を反映していない件、PostToolUse フックが /bin/sh で bash 構文を使い常にエラーになる件。
+- 2026-06-10: code-review（2 ファインダー並列）で文書間矛盾 9 件を検出し修正（応答なし/期限切れの状態分離、署名束縛フィールドへの理由追加、ロードマップのゲート分離、W-04/W-05/W-05b/W-09 の補完、フロー 4 独立判定、フロー 7 状態遷移図）。security-review は指摘 0 件。draft PR #4 作成、CI Green。
+- 2026-06-10: 実装フェーズ開始（/feature フロー）。仕様書 `docs/specs/2026-06-10-zerokey-family-phase1-core.md` 作成、役割別 Issue 5〜9 作成。packages/backend（Hono + bun:sqlite + Ed25519）と packages/frontend（Vite + React + WebCrypto）の土台を固定し、PM / Designer / QA / User / バックエンド開発 / フロントエンド開発の 6 エージェントを並列起動。
 
 #### 振り返り
 
