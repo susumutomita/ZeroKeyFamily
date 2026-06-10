@@ -1,0 +1,236 @@
+/*
+ * 共通デザイン要件（wireframes.md）:
+ * - 本文の最小フォントサイズは 17pt 相当（約 23px）、金額は 22pt 相当（約 29px）以上。
+ * - 状態は色だけで区別せず、アイコン形状と文言を併用する。
+ */
+
+:root {
+  font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+  color: #1a1a1a;
+  background: #fafaf7;
+}
+
+body {
+  margin: 0;
+  font-size: 23px;
+  line-height: 1.6;
+}
+
+.app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.screen h1,
+.status-heading {
+  font-size: 1.3em;
+  line-height: 1.4;
+}
+
+.status-icon {
+  display: inline-block;
+  margin-right: 0.4em;
+  border: 3px solid currentColor;
+  border-radius: 50%;
+  width: 1.4em;
+  height: 1.4em;
+  line-height: 1.4em;
+  text-align: center;
+}
+
+/* 確認済み・未確認・失敗は色に加えてアイコン形状と文言で区別する */
+.status-heading--verified {
+  color: #14532d;
+}
+
+.status-heading--pending {
+  color: #57534e;
+}
+
+.status-heading--pending .status-icon {
+  border-radius: 8px;
+}
+
+.status-heading--failed {
+  color: #7f1d1d;
+}
+
+.status-heading--failed .status-icon {
+  border-radius: 0;
+}
+
+.status-heading--alert {
+  color: #78350f;
+}
+
+.main-copy {
+  font-size: 1em;
+}
+
+.main-copy--directive {
+  font-weight: 700;
+}
+
+.caution {
+  background: #fef9c3;
+  border-left: 6px solid #a16207;
+  padding: 8px 12px;
+  font-size: 0.95em;
+}
+
+.notice {
+  background: #fee2e2;
+  border-left: 6px solid #7f1d1d;
+  padding: 8px 12px;
+}
+
+.limitation-note {
+  border: 2px solid #57534e;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.meta {
+  color: #57534e;
+  font-size: 0.85em;
+}
+
+.request-detail {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  border: 2px solid #d6d3d1;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.request-detail dt {
+  font-weight: 700;
+}
+
+.request-detail dd {
+  margin: 0;
+}
+
+.request-detail__amount {
+  font-size: 1.3em; /* 金額は 22pt 相当以上 */
+  font-weight: 700;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.actions--stacked {
+  flex-direction: column;
+}
+
+.button {
+  font-size: 1em;
+  padding: 14px 20px;
+  border-radius: 12px;
+  border: 2px solid #44403c;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.button--large {
+  font-size: 1.1em;
+  padding: 20px;
+}
+
+.button--primary {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+
+.button--help {
+  background: #fef3c7;
+  border-color: #a16207;
+}
+
+.button--danger {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #ffffff;
+}
+
+.button--quiet {
+  border-color: #d6d3d1;
+  color: #57534e;
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.field {
+  margin: 16px 0;
+  border: none;
+  padding: 0;
+}
+
+.field label,
+.field legend {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.field input,
+.field select {
+  font-size: 1em;
+  padding: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  border: 2px solid #78716c;
+  border-radius: 8px;
+}
+
+.radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 16px;
+}
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recent-list__item {
+  border-bottom: 1px solid #d6d3d1;
+}
+
+.recent-list__button {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  background: none;
+  border: none;
+  font-size: 1em;
+  padding: 12px 4px;
+  cursor: pointer;
+}
+
+.footer-nav {
+  display: flex;
+  justify-content: space-around;
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 2px solid #d6d3d1;
+  color: #57534e;
+}
+
+.help-item {
+  border: 2px solid #d6d3d1;
+  border-radius: 8px;
+  padding: 12px;
+}
