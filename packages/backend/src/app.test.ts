@@ -1300,3 +1300,33 @@ describe('確認要求の一覧', () => {
     expect(requests.find((r) => r.id === request.id)?.status).toBe('expired');
   });
 });
+
+describe('招待確認のレスポンス', () => {
+  it('確認レスポンスは参加した家族グループの circleId を返す', async () => {
+    const ctx = createTestContext();
+    const creator = await registerMember(ctx.app, '花子');
+    const joiner = await registerMember(ctx.app, '太郎');
+    const circleRes = await postJson(ctx.app, '/api/circles', {
+      name: 'テスト家族',
+      creatorMemberId: creator.memberId,
+    });
+    const { circle } = (await circleRes.json()) as { circle: { id: string } };
+    const inviteRes = await postJson(ctx.app, '/api/invites', {
+      circleId: circle.id,
+      inviterMemberId: creator.memberId,
+      kind: 'qr',
+    });
+    const { invite } = (await inviteRes.json()) as { invite: { id: string } };
+    const confirmRes = await postJson(
+      ctx.app,
+      `/api/invites/${invite.id}/confirm`,
+      { inviteeMemberId: joiner.memberId }
+    );
+    expect(confirmRes.status).toBe(200);
+    const body = (await confirmRes.json()) as {
+      invite: { status: string; circleId: string };
+    };
+    expect(body.invite.status).toBe('confirmed');
+    expect(body.invite.circleId).toBe(circle.id);
+  });
+});

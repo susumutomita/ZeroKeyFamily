@@ -444,7 +444,13 @@ export function createApp(deps: AppDeps): Hono {
        WHERE id = ?`,
       [inviteeMemberId, invite.id]
     );
-    return c.json({ invite: { id: invite.id, status: 'confirmed' } });
+    return c.json({
+      invite: {
+        id: invite.id,
+        status: 'confirmed',
+        circleId: invite.circle_id,
+      },
+    });
   });
 
   app.post('/api/invites/:id/cancel', (c) => {
