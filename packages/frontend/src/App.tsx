@@ -1,8 +1,11 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  type CircleMember,
   cancelAndFetchRequest,
+  type MyCircle,
   type RequestRecord,
+  type RequestStatus,
   respondAndFetchRequest,
 } from './lib/api';
 import { canonicalize, payloadFromRequest } from './lib/canonical';
@@ -20,7 +23,10 @@ import {
   type RequestFormValues,
 } from './screens/CreateRequestScreen';
 import { EmergencyStopScreen } from './screens/EmergencyStopScreen';
+import { FamilyManageScreen } from './screens/FamilyManageScreen';
 import { HomeScreen, type RecentEntry } from './screens/HomeScreen';
+import { type InboxItem, InboxScreen } from './screens/InboxScreen';
+import { OnboardingScreen } from './screens/OnboardingScreen';
 import { ReceiveApproveScreen } from './screens/ReceiveApproveScreen';
 import { ResultExpiredScreen } from './screens/ResultExpiredScreen';
 import { ResultInProgressScreen } from './screens/ResultInProgressScreen';
@@ -31,6 +37,8 @@ import { ResultVerifiedScreen } from './screens/ResultVerifiedScreen';
 type View =
   | { name: 'home' }
   | { name: 'create' }
+  | { name: 'family' }
+  | { name: 'inbox' }
   | { name: 'receive'; request: RequestRecord; requesterLabel: string }
   | { name: 'result'; request: RequestRecord; targetName: string }
   | { name: 'stop' };
@@ -39,9 +47,20 @@ const DEVICE_KEY_ID = 'this-device';
 const MEMBER_ID_STORAGE_KEY = 'zerokey-member-id';
 const DEVICE_ID_STORAGE_KEY = 'zerokey-device-id';
 const CIRCLE_ID_STORAGE_KEY = 'zerokey-circle-id';
+const MEMBER_NAME_STORAGE_KEY = 'zerokey-member-name';
 
-/** 確認相手の候補。招待機能が入るまでの暫定動線では空。 */
-const REQUEST_TARGETS: { id: string; name: string; relation?: string }[] = [];
+/**
+ * 受信箱に「届いた確認」として並べるのは、自分の応答がまだ必要な
+ * unanswered のみ。collecting / waiting（応答済みで成立を待つ状態）や
+ * 確定済み（approved / rejected / expired / verification_failed /
+ * invalidated）は actionable 一覧に出さない。応答済み・時間経過で確定する
+ * 状態を「未対応」と誤認させないため（docs/product/failure-and-offline-
+ * behaviors.md「不明な状態を安心情報として表示しない」「部分的な成功を成功
+ * として表示しない」: 未確認と確定の混同を禁止する）。
+ */
+export function isUnsettled(status: RequestStatus): boolean {
+  return status === 'unanswered';
+}
 
 /**
  * メンバー ID から表示名を解決する。
@@ -54,43 +73,60 @@ export function resolveTargetName(
   return targets.find((target) => target.id === targetId)?.name ?? '家族';
 }
 
+/** 依頼者の「（人名）さんの端末」ラベルを実メンバーから組み立てる。 */
+export function requesterLabelFor(
+  members: readonly CircleMember[],
+  requesterMemberId: string
+): string {
+  return `${resolveTargetName(members, requesterMemberId)}さんの端末`;
+}
+
+/** 受信箱用に、未確定の確認だけを依頼者ラベル付きで並べる。 */
+export function buildInboxItems(
+  requests: readonly RequestRecord[],
+  members: readonly CircleMember[]
+): InboxItem[] {
+  return requests
+    .filter((request) => isUnsettled(request.status))
+    .map((request) => ({
+      id: request.id,
+      subject: request.subject,
+      requesterLabel: requesterLabelFor(members, request.requesterMemberId),
+      status: request.status,
+    }));
+}
+
+interface SelfState {
+  memberId: string;
+  deviceId: string;
+  circleId: string;
+  name: string;
+}
+
 interface AppProps {
   keyStore?: KeyStore;
 }
 
-/** localStorage に保存済みの自分のメンバー・端末を返し、無ければ API で登録する。 */
-async function ensureSelfRegistered(keyStore: KeyStore): Promise<{
-  memberId: string;
-  deviceId: string;
-  circleId: string;
-}> {
-  const storedMember = localStorage.getItem(MEMBER_ID_STORAGE_KEY);
-  const storedDevice = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
-  const storedCircle = localStorage.getItem(CIRCLE_ID_STORAGE_KEY);
-  if (storedMember && storedDevice && storedCircle) {
-    return {
-      memberId: storedMember,
-      deviceId: storedDevice,
-      circleId: storedCircle,
-    };
+/** localStorage から保存済みの自分を読み出す。未登録なら null。 */
+function loadSelf(): SelfState | null {
+  const memberId = localStorage.getItem(MEMBER_ID_STORAGE_KEY);
+  const deviceId = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+  const circleId = localStorage.getItem(CIRCLE_ID_STORAGE_KEY);
+  const name = localStorage.getItem(MEMBER_NAME_STORAGE_KEY);
+  if (memberId && deviceId && circleId && name) {
+    return { memberId, deviceId, circleId, name };
   }
-  const pair = await getOrCreateKeyPair(keyStore, DEVICE_KEY_ID);
-  const publicKey = await exportPublicKeyBase64(pair.publicKey);
-  const member = await api.createMember({ name: '自分', publicKey });
-  const circle = await api.createCircle({ name: '家族グループ' });
-  localStorage.setItem(MEMBER_ID_STORAGE_KEY, member.id);
-  localStorage.setItem(DEVICE_ID_STORAGE_KEY, member.deviceId);
-  localStorage.setItem(CIRCLE_ID_STORAGE_KEY, circle.id);
-  return {
-    memberId: member.id,
-    deviceId: member.deviceId,
-    circleId: circle.id,
-  };
+  return null;
 }
 
 export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
+  const [self, setSelf] = useState<SelfState | null>(() => loadSelf());
   const [view, setView] = useState<View>({ name: 'home' });
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
+  const [members, setMembers] = useState<CircleMember[]>([]);
+  const [myCircles, setMyCircles] = useState<MyCircle[]>([]);
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const showError = useCallback((error: unknown) => {
@@ -103,22 +139,75 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
     setView({ name: 'home' });
   }, []);
 
-  const refreshResult = useCallback(
-    async (requestId: string, targetName: string) => {
+  /** 宛先候補に使う家族メンバー（自分を含む生の一覧）を取り直す。 */
+  const refreshMembers = useCallback(
+    async (current: SelfState): Promise<CircleMember[]> => {
+      // バックエンドは呼び出し元 memberId を必須にしている（非メンバーへの
+      // 名簿露出を防ぐ）。自分の memberId を必ず渡す。
+      const list = await api.listCircleMembers(
+        current.circleId,
+        current.memberId
+      );
+      setMembers(list);
+      return list;
+    },
+    []
+  );
+
+  /** 参加中の家族グループ一覧（家族の切り替えに使う）を取り直す。 */
+  const refreshMyCircles = useCallback(
+    async (current: SelfState): Promise<MyCircle[]> => {
+      const list = await api.listMyCircles(current.memberId);
+      setMyCircles(list);
+      return list;
+    },
+    []
+  );
+
+  // 自分が確定したら家族メンバーと参加中の家族一覧を読み込む。
+  useEffect(() => {
+    if (self === null) {
+      return;
+    }
+    refreshMembers(self).catch(showError);
+    refreshMyCircles(self).catch(showError);
+  }, [self, refreshMembers, refreshMyCircles, showError]);
+
+  /** 初回オンボーディング: 名前登録 → メンバー作成 → 家族グループ作成。 */
+  const handleOnboard = useCallback(
+    async (name: string) => {
       try {
-        const request = await api.getRequest(requestId);
-        setView({ name: 'result', request, targetName });
+        const pair = await getOrCreateKeyPair(keyStore, DEVICE_KEY_ID);
+        const publicKey = await exportPublicKeyBase64(pair.publicKey);
+        const member = await api.createMember({ name, publicKey });
+        const circle = await api.createCircle({
+          name: `${name}の家族`,
+          creatorMemberId: member.id,
+        });
+        localStorage.setItem(MEMBER_ID_STORAGE_KEY, member.id);
+        localStorage.setItem(DEVICE_ID_STORAGE_KEY, member.deviceId);
+        localStorage.setItem(CIRCLE_ID_STORAGE_KEY, circle.id);
+        localStorage.setItem(MEMBER_NAME_STORAGE_KEY, member.name);
+        setSelf({
+          memberId: member.id,
+          deviceId: member.deviceId,
+          circleId: circle.id,
+          name: member.name,
+        });
+        setView({ name: 'home' });
       } catch (error) {
         showError(error);
       }
     },
-    [showError]
+    [keyStore, showError]
   );
 
   const handleCreateRequest = useCallback(
     async (values: RequestFormValues) => {
+      if (self === null) {
+        return;
+      }
       try {
-        const self = await ensureSelfRegistered(keyStore);
         const deadline = new Date(
           Date.now() + values.deadlineMinutes * 60 * 1000
         ).toISOString();
@@ -136,20 +225,22 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
         setView({
           name: 'result',
           request,
-          // メンバー ID を人名として表示しない。
-          targetName: resolveTargetName(REQUEST_TARGETS, values.targetId),
+          // 実メンバーから名前解決する（メンバー ID を人名として出さない）。
+          targetName: resolveTargetName(members, values.targetId),
         });
       } catch (error) {
         showError(error);
       }
     },
-    [keyStore, showError]
+    [self, members, showError]
   );
 
   const handleRespond = useCallback(
     async (request: RequestRecord, kind: 'approve' | 'reject') => {
+      if (self === null) {
+        return;
+      }
       try {
-        const self = await ensureSelfRegistered(keyStore);
         const pair = await getOrCreateKeyPair(keyStore, DEVICE_KEY_ID);
         const canonical = canonicalize(payloadFromRequest(request, kind));
         const signature = await signPayload(pair.privateKey, canonical);
@@ -164,24 +255,26 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
           {
             id: updated.id,
             relation: '家族',
-            name: '自分',
+            name: self.name,
             action: kind === 'approve' ? '承認' : '拒否',
             date: new Date().toLocaleDateString('ja-JP'),
           },
           ...entries,
         ]);
-        setView({ name: 'result', request: updated, targetName: '自分' });
+        setView({ name: 'result', request: updated, targetName: self.name });
       } catch (error) {
         showError(error);
       }
     },
-    [keyStore, showError]
+    [self, keyStore, showError]
   );
 
   const handleCancelRequest = useCallback(
     async (request: RequestRecord, targetName: string) => {
+      if (self === null) {
+        return;
+      }
       try {
-        const self = await ensureSelfRegistered(keyStore);
         // バックエンドは requesterMemberId をボディで必須にしている。
         const cancelled = await cancelAndFetchRequest(
           api,
@@ -193,12 +286,14 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
         showError(error);
       }
     },
-    [keyStore, showError]
+    [self, showError]
   );
 
   const handleStop = useCallback(async () => {
+    if (self === null) {
+      return;
+    }
     try {
-      const self = await ensureSelfRegistered(keyStore);
       await api.stopCircle(self.circleId, { memberId: self.memberId });
       setNotice(
         'すべての承認を止めました。再開には家族 2 人の操作が必要です。'
@@ -207,7 +302,154 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
     } catch (error) {
       showError(error);
     }
-  }, [keyStore, showError]);
+  }, [self, showError]);
+
+  const refreshResult = useCallback(
+    async (requestId: string, targetName: string) => {
+      try {
+        const request = await api.getRequest(requestId);
+        setView({ name: 'result', request, targetName });
+      } catch (error) {
+        showError(error);
+      }
+    },
+    [showError]
+  );
+
+  /** 家族の管理画面を開く（最新メンバーを読み込み、招待コードは消す）。 */
+  const openFamily = useCallback(async () => {
+    if (self === null) {
+      return;
+    }
+    setInviteCode(null);
+    setNotice(null);
+    try {
+      await refreshMembers(self);
+      await refreshMyCircles(self);
+    } catch (error) {
+      showError(error);
+    }
+    setView({ name: 'family' });
+  }, [self, refreshMembers, refreshMyCircles, showError]);
+
+  const handleCreateInvite = useCallback(async () => {
+    if (self === null) {
+      return;
+    }
+    try {
+      const invite = await api.createInvite({
+        circleId: self.circleId,
+        inviterMemberId: self.memberId,
+        kind: 'qr',
+      });
+      setInviteCode(invite.id);
+    } catch (error) {
+      showError(error);
+    }
+  }, [self, showError]);
+
+  const handleJoinFamily = useCallback(
+    async (code: string) => {
+      if (self === null) {
+        return;
+      }
+      try {
+        const confirmed = await api.confirmInvite(code, {
+          inviteeMemberId: self.memberId,
+        });
+        const joinedCircleId = confirmed.circleId ?? self.circleId;
+        localStorage.setItem(CIRCLE_ID_STORAGE_KEY, joinedCircleId);
+        const next = { ...self, circleId: joinedCircleId };
+        setSelf(next);
+        setInviteCode(null);
+        setNotice(UI_COPY.familyJoinedNote);
+        await refreshMembers(next);
+        // 参加先が増えたので一覧を取り直す（元家族へ戻る導線を保つ）。
+        await refreshMyCircles(next);
+      } catch (error) {
+        showError(error);
+      }
+    },
+    [self, refreshMembers, refreshMyCircles, showError]
+  );
+
+  /**
+   * アクティブな家族を切り替える。join 時の上書きで元家族へ戻れなくなる欠陥を
+   * 解消するため、参加中の家族一覧から選んで localStorage の circleId を
+   * 差し替え、宛先候補・受信箱・メンバー一覧を新しいアクティブ家族で取り直す。
+   */
+  const handleSwitchCircle = useCallback(
+    async (circleId: string) => {
+      if (self === null || circleId === self.circleId) {
+        return;
+      }
+      localStorage.setItem(CIRCLE_ID_STORAGE_KEY, circleId);
+      const next = { ...self, circleId };
+      setSelf(next);
+      setInviteCode(null);
+      setInboxItems([]);
+      try {
+        await refreshMembers(next);
+      } catch (error) {
+        showError(error);
+      }
+    },
+    [self, refreshMembers, showError]
+  );
+
+  /** 受信箱を開く（自分宛の未確定の確認を読み込む）。 */
+  const openInbox = useCallback(async () => {
+    if (self === null) {
+      return;
+    }
+    setNotice(null);
+    try {
+      const list = await refreshMembers(self);
+      const requests = await api.listRequests(self.circleId, {
+        memberId: self.memberId,
+        targetMemberId: self.memberId,
+      });
+      setInboxItems(buildInboxItems(requests, list));
+    } catch (error) {
+      showError(error);
+    }
+    setView({ name: 'inbox' });
+  }, [self, refreshMembers, showError]);
+
+  const openInboxItem = useCallback(
+    async (item: InboxItem) => {
+      try {
+        const request = await api.getRequest(item.id);
+        setView({
+          name: 'receive',
+          request,
+          requesterLabel: item.requesterLabel,
+        });
+      } catch (error) {
+        showError(error);
+      }
+    },
+    [showError]
+  );
+
+  // 名前未登録ならオンボーディングへ誘導する。
+  if (self === null) {
+    return (
+      <main className="app">
+        {notice !== null && (
+          <p className="notice" role="status">
+            {notice}
+          </p>
+        )}
+        <OnboardingScreen onStart={handleOnboard} />
+      </main>
+    );
+  }
+
+  // 宛先候補は自分を除いた家族メンバー。
+  const targets = members
+    .filter((member) => member.id !== self.memberId)
+    .map((member) => ({ id: member.id, name: member.name }));
 
   return (
     <main className="app">
@@ -221,12 +463,34 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
           recentEntries={recentEntries}
           onCreateRequest={() => setView({ name: 'create' })}
           onHelp={() => setView({ name: 'stop' })}
+          onManageFamily={openFamily}
+          onOpenInbox={openInbox}
         />
       )}
       {view.name === 'create' && (
         <CreateRequestScreen
-          targets={REQUEST_TARGETS}
+          targets={targets}
           onSubmit={handleCreateRequest}
+          onBack={goHome}
+          onManageFamily={openFamily}
+        />
+      )}
+      {view.name === 'family' && (
+        <FamilyManageScreen
+          circleId={self.circleId}
+          members={members}
+          myCircles={myCircles}
+          inviteCode={inviteCode}
+          onCreateInvite={handleCreateInvite}
+          onJoin={handleJoinFamily}
+          onSwitchCircle={handleSwitchCircle}
+          onBack={goHome}
+        />
+      )}
+      {view.name === 'inbox' && (
+        <InboxScreen
+          items={inboxItems}
+          onOpen={openInboxItem}
           onBack={goHome}
         />
       )}

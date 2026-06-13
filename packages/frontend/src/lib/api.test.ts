@@ -37,6 +37,7 @@ const requestRecordFixture: RequestRecord = {
 let server: ReturnType<typeof Bun.serve>;
 let client: ApiClient;
 const captured: CapturedRequest[] = [];
+const capturedQueries: string[] = [];
 
 beforeAll(() => {
   server = Bun.serve({
@@ -49,6 +50,7 @@ beforeAll(() => {
         path: url.pathname,
         body: text === '' ? null : JSON.parse(text),
       });
+      capturedQueries.push(url.search);
       // バックエンドの実レスポンス形式（app.ts）を再現する。
       if (url.pathname === '/api/requests' && req.method === 'POST') {
         return Response.json(
@@ -90,6 +92,37 @@ beforeAll(() => {
           { status: 201 }
         );
       }
+      // GET /api/circles/:id/members（宛先候補・参加メンバー一覧）。
+      if (
+        /^\/api\/circles\/[^/]+\/members$/.test(url.pathname) &&
+        req.method === 'GET'
+      ) {
+        return Response.json({
+          members: [
+            { id: 'm-1', name: '佐藤良子' },
+            { id: 'm-2', name: '佐藤太郎' },
+          ],
+        });
+      }
+      // GET /api/circles/:id/requests（受信箱・送信箱）。
+      if (
+        /^\/api\/circles\/[^/]+\/requests$/.test(url.pathname) &&
+        req.method === 'GET'
+      ) {
+        return Response.json({ requests: [requestRecordFixture] });
+      }
+      // GET /api/members/:id/circles（参加中の家族一覧）。
+      if (
+        /^\/api\/members\/[^/]+\/circles$/.test(url.pathname) &&
+        req.method === 'GET'
+      ) {
+        return Response.json({
+          circles: [
+            { id: 'c-1', name: '佐藤家', status: 'normal' },
+            { id: 'c-2', name: '田中家', status: 'stopped' },
+          ],
+        });
+      }
       if (url.pathname === '/api/invites' && req.method === 'POST') {
         return Response.json(
           {
@@ -104,8 +137,13 @@ beforeAll(() => {
           { status: 201 }
         );
       }
-      if (/^\/api\/invites\/[^/]+\/(confirm|cancel)$/.test(url.pathname)) {
-        return Response.json({ invite: { id: 'inv-1', status: 'confirmed' } });
+      if (/^\/api\/invites\/[^/]+\/confirm$/.test(url.pathname)) {
+        return Response.json({
+          invite: { id: 'inv-1', status: 'confirmed', circleId: 'c-joined' },
+        });
+      }
+      if (/^\/api\/invites\/[^/]+\/cancel$/.test(url.pathname)) {
+        return Response.json({ invite: { id: 'inv-1', status: 'cancelled' } });
       }
       if (/^\/api\/devices\/[^/]+\/revoke$/.test(url.pathname)) {
         return Response.json({ device: { id: 'd-1', status: 'revoked' } });
@@ -154,14 +192,70 @@ describe('API クライアント（実 HTTP サーバーに対する送信）', 
     expect(member).toEqual({ id: 'm-1', name: '佐藤良子', deviceId: 'd-1' });
   });
 
-  it('POST /api/circles の `{ circle }` 封筒を unwrap して返す', async () => {
-    const circle = await client.createCircle({ name: '佐藤家' });
+  it('POST /api/circles は creatorMemberId 必須の契約に合わせてボディに作成者を含める', async () => {
+    const circle = await client.createCircle({
+      name: '佐藤家',
+      creatorMemberId: 'm-1',
+    });
     expect(lastCaptured()).toEqual({
       method: 'POST',
       path: '/api/circles',
-      body: { name: '佐藤家' },
+      body: { name: '佐藤家', creatorMemberId: 'm-1' },
     });
     expect(circle).toEqual({ id: 'c-1', name: '佐藤家', status: 'normal' });
+  });
+
+  it('GET /api/circles/:id/members は呼び出し元 memberId を必須クエリにして `{ members }` 封筒を unwrap する', async () => {
+    const members = await client.listCircleMembers('c-1', 'm-1');
+    const last = lastCaptured();
+    expect(last.method).toBe('GET');
+    expect(last.path).toBe('/api/circles/c-1/members');
+    expect(last.body).toBeNull();
+    // 非メンバーへの名簿露出を防ぐため memberId を必ず付ける。
+    expect(capturedQueries.at(-1) ?? '').toContain('memberId=m-1');
+    expect(members).toEqual([
+      { id: 'm-1', name: '佐藤良子' },
+      { id: 'm-2', name: '佐藤太郎' },
+    ]);
+  });
+
+  it('GET /api/circles/:id/requests は memberId を必須にして常にクエリへ含める', async () => {
+    const requests = await client.listRequests('c-1', { memberId: 'm-1' });
+    const last = lastCaptured();
+    expect(last.method).toBe('GET');
+    expect(last.path).toBe('/api/circles/c-1/requests');
+    expect(last.body).toBeNull();
+    expect(capturedQueries.at(-1) ?? '').toContain('memberId=m-1');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.amount).toBe(300000);
+  });
+
+  it('GET /api/circles/:id/requests は memberId に加え targetMemberId / requesterMemberId をクエリ文字列に組み立てる', async () => {
+    await client.listRequests('c-1', {
+      memberId: 'm-1',
+      targetMemberId: 'm-2',
+      requesterMemberId: 'm-1',
+    });
+    const last = lastCaptured();
+    expect(last.method).toBe('GET');
+    expect(last.path).toBe('/api/circles/c-1/requests');
+    const query = capturedQueries.at(-1) ?? '';
+    expect(query).toContain('memberId=m-1');
+    expect(query).toContain('targetMemberId=m-2');
+    expect(query).toContain('requesterMemberId=m-1');
+  });
+
+  it('GET /api/members/:id/circles の `{ circles }` 封筒を unwrap して参加中の家族一覧を返す', async () => {
+    const circles = await client.listMyCircles('m-1');
+    expect(lastCaptured()).toEqual({
+      method: 'GET',
+      path: '/api/members/m-1/circles',
+      body: null,
+    });
+    expect(circles).toEqual([
+      { id: 'c-1', name: '佐藤家', status: 'normal' },
+      { id: 'c-2', name: '田中家', status: 'stopped' },
+    ]);
   });
 
   it('POST /api/invites と confirm / cancel は `{ invite }` 封筒を unwrap する', async () => {
@@ -173,13 +267,20 @@ describe('API クライアント（実 HTTP サーバーに対する送信）', 
     expect(lastCaptured().path).toBe('/api/invites');
     expect(invite.id).toBe('inv-1');
     expect(invite.status).toBe('waiting');
-    const confirmed = await client.confirmInvite('inv-1');
+    const confirmed = await client.confirmInvite('inv-1', {
+      inviteeMemberId: 'm-2',
+    });
     expect(lastCaptured()).toEqual({
       method: 'POST',
       path: '/api/invites/inv-1/confirm',
-      body: null,
+      body: { inviteeMemberId: 'm-2' },
     });
-    expect(confirmed).toEqual({ id: 'inv-1', status: 'confirmed' });
+    // 参加先 circle を切り替えるため、レスポンスの circleId を保持する。
+    expect(confirmed).toEqual({
+      id: 'inv-1',
+      status: 'confirmed',
+      circleId: 'c-joined',
+    });
     await client.cancelInvite('inv-1');
     expect(lastCaptured().path).toBe('/api/invites/inv-1/cancel');
   });

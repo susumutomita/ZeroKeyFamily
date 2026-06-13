@@ -1238,3 +1238,148 @@ describe('回答期限の範囲検証', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('家族メンバー一覧', () => {
+  it('表示名つきで参加中のメンバーを参加順に返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx, 3);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/members?memberId=${family.requester.memberId}`
+    );
+    expect(res.status).toBe(200);
+    const { members } = (await res.json()) as {
+      members: { id: string; name: string }[];
+    };
+    expect(members.map((m) => m.name)).toEqual(['花子', '太郎', '次郎']);
+    expect(members[0]?.id).toBe(family.requester.memberId);
+  });
+
+  it('存在しない家族グループは 404 を返す', async () => {
+    const ctx = createTestContext();
+    const res = await ctx.app.request(
+      '/api/circles/missing/members?memberId=anyone'
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('非メンバー（家族コードのみ知る者）には 403 を返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const outsider = await registerMember(ctx.app, '部外者');
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/members?memberId=${outsider.memberId}`
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('memberId 未指定は 403 を返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/members`
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('参加中の家族グループ一覧', () => {
+  it('メンバーが参加中の家族を返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const res = await ctx.app.request(
+      `/api/members/${family.requester.memberId}/circles`
+    );
+    expect(res.status).toBe(200);
+    const { circles } = (await res.json()) as {
+      circles: { id: string; name: string }[];
+    };
+    expect(circles.map((cir) => cir.id)).toContain(family.circleId);
+  });
+
+  it('存在しないメンバーは 404 を返す', async () => {
+    const ctx = createTestContext();
+    const res = await ctx.app.request('/api/members/missing/circles');
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('確認要求の一覧', () => {
+  it('対象メンバー宛ての受信箱を新しい順に返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const first = await createRequest(ctx, family);
+    ctx.clock.advanceMinutes(1);
+    const second = await createRequest(ctx, family);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/requests?memberId=${family.target.memberId}&targetMemberId=${family.target.memberId}`
+    );
+    expect(res.status).toBe(200);
+    const { requests } = (await res.json()) as { requests: RequestJson[] };
+    expect(requests.map((r) => r.id)).toEqual([second.id, first.id]);
+  });
+
+  it('送信者で絞り込める', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    await createRequest(ctx, family);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/requests?memberId=${family.requester.memberId}&requesterMemberId=${family.requester.memberId}`
+    );
+    const { requests } = (await res.json()) as { requests: RequestJson[] };
+    expect(requests.length).toBe(1);
+    expect(requests[0]?.requesterMemberId).toBe(family.requester.memberId);
+  });
+
+  it('非メンバーには 403 を返し履歴を露出しない', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    await createRequest(ctx, family);
+    const outsider = await registerMember(ctx.app, '部外者');
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/requests?memberId=${outsider.memberId}`
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('一覧の読み取り時に期限超過した要求を expired へ確定する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    ctx.clock.advanceMinutes(31);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/requests?memberId=${family.target.memberId}&targetMemberId=${family.target.memberId}`
+    );
+    const { requests } = (await res.json()) as { requests: RequestJson[] };
+    expect(requests.find((r) => r.id === request.id)?.status).toBe('expired');
+  });
+});
+
+describe('招待確認のレスポンス', () => {
+  it('確認レスポンスは参加した家族グループの circleId を返す', async () => {
+    const ctx = createTestContext();
+    const creator = await registerMember(ctx.app, '花子');
+    const joiner = await registerMember(ctx.app, '太郎');
+    const circleRes = await postJson(ctx.app, '/api/circles', {
+      name: 'テスト家族',
+      creatorMemberId: creator.memberId,
+    });
+    const { circle } = (await circleRes.json()) as { circle: { id: string } };
+    const inviteRes = await postJson(ctx.app, '/api/invites', {
+      circleId: circle.id,
+      inviterMemberId: creator.memberId,
+      kind: 'qr',
+    });
+    const { invite } = (await inviteRes.json()) as { invite: { id: string } };
+    const confirmRes = await postJson(
+      ctx.app,
+      `/api/invites/${invite.id}/confirm`,
+      { inviteeMemberId: joiner.memberId }
+    );
+    expect(confirmRes.status).toBe(200);
+    const body = (await confirmRes.json()) as {
+      invite: { status: string; circleId: string };
+    };
+    expect(body.invite.status).toBe('confirmed');
+    expect(body.invite.circleId).toBe(circle.id);
+  });
+});

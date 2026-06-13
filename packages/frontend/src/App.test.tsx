@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ResultView, resolveTargetName } from './App';
-import type { RequestRecord, RequestStatus } from './lib/api';
+import {
+  buildInboxItems,
+  isUnsettled,
+  ResultView,
+  requesterLabelFor,
+  resolveTargetName,
+} from './App';
+import type { CircleMember, RequestRecord, RequestStatus } from './lib/api';
 import { UI_COPY } from './lib/copy';
 
 function recordWithStatus(status: RequestStatus): RequestRecord {
@@ -83,6 +89,94 @@ describe('結果画面の状態分岐（ResultView）', () => {
   it('invalidated では取り消し済みであることを表示する', () => {
     const html = renderResult('invalidated');
     expect(html).toContain('このお願いは取り消されました。');
+  });
+});
+
+describe('受信箱の未対応判定（isUnsettled）', () => {
+  it('自分の応答がまだ必要な unanswered のみを未対応とみなす', () => {
+    expect(isUnsettled('unanswered')).toBe(true);
+  });
+
+  it('応答済みで成立を待つ collecting / waiting は未対応に含めない', () => {
+    // 応答済み・時間経過で確定する状態を「未対応」と誤認させない。
+    expect(isUnsettled('collecting')).toBe(false);
+    expect(isUnsettled('waiting')).toBe(false);
+  });
+
+  it('確定済み（approved / rejected / expired など）は未対応ではない', () => {
+    expect(isUnsettled('approved')).toBe(false);
+    expect(isUnsettled('rejected')).toBe(false);
+    expect(isUnsettled('expired')).toBe(false);
+    expect(isUnsettled('verification_failed')).toBe(false);
+    expect(isUnsettled('invalidated')).toBe(false);
+  });
+});
+
+describe('依頼者ラベルの組み立て（requesterLabelFor）', () => {
+  const members: CircleMember[] = [
+    { id: 'm-1', name: '佐藤良子' },
+    { id: 'm-2', name: '佐藤太郎' },
+  ];
+
+  it('依頼者の実名から「（人名）さんの端末」を組み立てる', () => {
+    expect(requesterLabelFor(members, 'm-1')).toBe('佐藤良子さんの端末');
+  });
+
+  it('未知の依頼者でもメンバー ID を人名として出さない', () => {
+    expect(requesterLabelFor(members, 'm-x')).toBe('家族さんの端末');
+  });
+});
+
+describe('受信箱アイテムの構築（buildInboxItems）', () => {
+  const members: CircleMember[] = [
+    { id: 'm-1', name: '佐藤良子' },
+    { id: 'm-2', name: '佐藤太郎' },
+  ];
+  function rec(
+    id: string,
+    requesterMemberId: string,
+    status: RequestStatus
+  ): RequestRecord {
+    return {
+      id,
+      circleId: 'c1',
+      requesterMemberId,
+      targetMemberId: 'me',
+      subject: 'お金を送ってほしいと言われた',
+      amount: 300000,
+      beneficiary: '○○銀行 1234567',
+      reason: '会社のお金をなくした',
+      deadline: '2026-06-10T15:30:00Z',
+      nonce: 'n',
+      status,
+      secondApprovalRequired: false,
+      waitRequired: false,
+      waitUntil: null,
+      createdAt: '2026-06-10T12:00:00.000Z',
+    };
+  }
+
+  it('自分の応答が必要な unanswered だけを受信箱に並べ、依頼者の実名ラベルを付ける', () => {
+    const items = buildInboxItems(
+      [
+        rec('r1', 'm-1', 'unanswered'),
+        rec('r2', 'm-2', 'approved'),
+        rec('r3', 'm-1', 'collecting'),
+      ],
+      members
+    );
+    expect(items.map((item) => item.id)).toEqual(['r1']);
+    expect(items[0]?.requesterLabel).toBe('佐藤良子さんの端末');
+    expect(items[0]?.subject).toBe('お金を送ってほしいと言われた');
+  });
+
+  it('応答済みで成立を待つ collecting / waiting は受信箱に並べない', () => {
+    // 「未対応」と誤認させないため actionable 一覧から除外する。
+    const items = buildInboxItems(
+      [rec('r1', 'm-1', 'collecting'), rec('r2', 'm-2', 'waiting')],
+      members
+    );
+    expect(items).toEqual([]);
   });
 });
 
