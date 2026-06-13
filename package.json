@@ -1,18 +1,18 @@
 {
-  "name": "typescript-template",
+  "name": "zerokey-family",
   "version": "1.0.0",
-  "description": "TypeScript + Bun + Hono + Vite + React + Biome の Claude Code 向けモノレポテンプレート。サプライチェイン防御 (ADR-0001) と architecture-harness invariant が既定で入っている。",
+  "description": "AI 音声・映像の真偽判定に頼らず、依頼内容に対する家族の意思表示を端末鍵で暗号的に検証する家族向け確認サービス。Bun + Hono + Vite + React + WebCrypto (Ed25519)。",
   "author": "Susumu Tomita <oyster880@gmail.com>",
   "license": "MIT",
   "private": true,
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/susumutomita/typescript-template.git"
+    "url": "git+https://github.com/susumutomita/ZeroKeyFamily.git"
   },
-  "homepage": "https://github.com/susumutomita/typescript-template#readme",
+  "homepage": "https://github.com/susumutomita/ZeroKeyFamily#readme",
   "bugs": {
-    "url": "https://github.com/susumutomita/typescript-template/issues"
+    "url": "https://github.com/susumutomita/ZeroKeyFamily/issues"
   },
   "packageManager": "bun@1.3.11",
   "engines": {
