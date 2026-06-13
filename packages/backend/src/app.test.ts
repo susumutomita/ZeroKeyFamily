@@ -1244,7 +1244,7 @@ describe('家族メンバー一覧', () => {
     const ctx = createTestContext();
     const family = await setupFamily(ctx, 3);
     const res = await ctx.app.request(
-      `/api/circles/${family.circleId}/members`
+      `/api/circles/${family.circleId}/members?memberId=${family.requester.memberId}`
     );
     expect(res.status).toBe(200);
     const { members } = (await res.json()) as {
@@ -1256,7 +1256,49 @@ describe('家族メンバー一覧', () => {
 
   it('存在しない家族グループは 404 を返す', async () => {
     const ctx = createTestContext();
-    const res = await ctx.app.request('/api/circles/missing/members');
+    const res = await ctx.app.request(
+      '/api/circles/missing/members?memberId=anyone'
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('非メンバー（家族コードのみ知る者）には 403 を返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const outsider = await registerMember(ctx.app, '部外者');
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/members?memberId=${outsider.memberId}`
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('memberId 未指定は 403 を返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/members`
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('参加中の家族グループ一覧', () => {
+  it('メンバーが参加中の家族を返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const res = await ctx.app.request(
+      `/api/members/${family.requester.memberId}/circles`
+    );
+    expect(res.status).toBe(200);
+    const { circles } = (await res.json()) as {
+      circles: { id: string; name: string }[];
+    };
+    expect(circles.map((cir) => cir.id)).toContain(family.circleId);
+  });
+
+  it('存在しないメンバーは 404 を返す', async () => {
+    const ctx = createTestContext();
+    const res = await ctx.app.request('/api/members/missing/circles');
     expect(res.status).toBe(404);
   });
 });
@@ -1269,7 +1311,7 @@ describe('確認要求の一覧', () => {
     ctx.clock.advanceMinutes(1);
     const second = await createRequest(ctx, family);
     const res = await ctx.app.request(
-      `/api/circles/${family.circleId}/requests?targetMemberId=${family.target.memberId}`
+      `/api/circles/${family.circleId}/requests?memberId=${family.target.memberId}&targetMemberId=${family.target.memberId}`
     );
     expect(res.status).toBe(200);
     const { requests } = (await res.json()) as { requests: RequestJson[] };
@@ -1281,11 +1323,22 @@ describe('確認要求の一覧', () => {
     const family = await setupFamily(ctx);
     await createRequest(ctx, family);
     const res = await ctx.app.request(
-      `/api/circles/${family.circleId}/requests?requesterMemberId=${family.requester.memberId}`
+      `/api/circles/${family.circleId}/requests?memberId=${family.requester.memberId}&requesterMemberId=${family.requester.memberId}`
     );
     const { requests } = (await res.json()) as { requests: RequestJson[] };
     expect(requests.length).toBe(1);
     expect(requests[0]?.requesterMemberId).toBe(family.requester.memberId);
+  });
+
+  it('非メンバーには 403 を返し履歴を露出しない', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    await createRequest(ctx, family);
+    const outsider = await registerMember(ctx.app, '部外者');
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/requests?memberId=${outsider.memberId}`
+    );
+    expect(res.status).toBe(403);
   });
 
   it('一覧の読み取り時に期限超過した要求を expired へ確定する', async () => {
@@ -1294,7 +1347,7 @@ describe('確認要求の一覧', () => {
     const request = await createRequest(ctx, family);
     ctx.clock.advanceMinutes(31);
     const res = await ctx.app.request(
-      `/api/circles/${family.circleId}/requests?targetMemberId=${family.target.memberId}`
+      `/api/circles/${family.circleId}/requests?memberId=${family.target.memberId}&targetMemberId=${family.target.memberId}`
     );
     const { requests } = (await res.json()) as { requests: RequestJson[] };
     expect(requests.find((r) => r.id === request.id)?.status).toBe('expired');

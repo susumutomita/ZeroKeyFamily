@@ -323,6 +323,12 @@ export function createApp(deps: AppDeps): Hono {
     if (!circle) {
       return c.json({ error: 'circle_not_found' }, 404);
     }
+    // 家族コード(circleId)を知るだけの非メンバーに名簿・履歴を露出しない。
+    // 呼び出し元 memberId が当該 circle のメンバーであることを要求する。
+    const callerId = c.req.query('memberId');
+    if (!isNonEmptyString(callerId) || !isCircleMember(circle.id, callerId)) {
+      return c.json({ error: 'not_circle_member' }, 403);
+    }
     const members = db
       .query<{ id: string; name: string }, [string]>(
         `SELECT m.id AS id, m.name AS name
@@ -339,6 +345,11 @@ export function createApp(deps: AppDeps): Hono {
     const circle = getCircle(c.req.param('id'));
     if (!circle) {
       return c.json({ error: 'circle_not_found' }, 404);
+    }
+    // 確認履歴（金額・送金先・理由）は家族内に限定する。非メンバーには返さない。
+    const callerId = c.req.query('memberId');
+    if (!isNonEmptyString(callerId) || !isCircleMember(circle.id, callerId)) {
+      return c.json({ error: 'not_circle_member' }, 403);
     }
     const targetMemberId = c.req.query('targetMemberId');
     const requesterMemberId = c.req.query('requesterMemberId');
@@ -360,6 +371,23 @@ export function createApp(deps: AppDeps): Hono {
       .all(...params);
     const requests = rows.map((row) => toRequestJson(refreshRequest(row)));
     return c.json({ requests });
+  });
+
+  // --- あるメンバーが参加中の家族グループ一覧（家族の切り替えに使う） ---
+  app.get('/api/members/:id/circles', (c) => {
+    const member = getMember(c.req.param('id'));
+    if (!member) {
+      return c.json({ error: 'member_not_found' }, 404);
+    }
+    const circles = db
+      .query<{ id: string; name: string; status: string }, [string]>(
+        `SELECT c.id AS id, c.name AS name, c.status AS status
+         FROM circle_members cm JOIN circles c ON c.id = cm.circle_id
+         WHERE cm.member_id = ? AND cm.left_at IS NULL
+         ORDER BY cm.joined_at ASC, cm.rowid ASC`
+      )
+      .all(member.id);
+    return c.json({ circles });
   });
 
   // --- 招待 ---
