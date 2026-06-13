@@ -92,14 +92,18 @@ describe('結果画面の状態分岐（ResultView）', () => {
   });
 });
 
-describe('受信箱の未確定判定（isUnsettled）', () => {
-  it('unanswered / collecting / waiting を未確定とみなす', () => {
+describe('受信箱の未対応判定（isUnsettled）', () => {
+  it('自分の応答がまだ必要な unanswered のみを未対応とみなす', () => {
     expect(isUnsettled('unanswered')).toBe(true);
-    expect(isUnsettled('collecting')).toBe(true);
-    expect(isUnsettled('waiting')).toBe(true);
   });
 
-  it('確定済み（approved / rejected / expired など）は未確定ではない', () => {
+  it('応答済みで成立を待つ collecting / waiting は未対応に含めない', () => {
+    // 応答済み・時間経過で確定する状態を「未対応」と誤認させない。
+    expect(isUnsettled('collecting')).toBe(false);
+    expect(isUnsettled('waiting')).toBe(false);
+  });
+
+  it('確定済み（approved / rejected / expired など）は未対応ではない', () => {
     expect(isUnsettled('approved')).toBe(false);
     expect(isUnsettled('rejected')).toBe(false);
     expect(isUnsettled('expired')).toBe(false);
@@ -152,7 +156,7 @@ describe('受信箱アイテムの構築（buildInboxItems）', () => {
     };
   }
 
-  it('未確定の確認だけを受信箱に並べ、依頼者の実名ラベルを付ける', () => {
+  it('自分の応答が必要な unanswered だけを受信箱に並べ、依頼者の実名ラベルを付ける', () => {
     const items = buildInboxItems(
       [
         rec('r1', 'm-1', 'unanswered'),
@@ -161,9 +165,18 @@ describe('受信箱アイテムの構築（buildInboxItems）', () => {
       ],
       members
     );
-    expect(items.map((item) => item.id)).toEqual(['r1', 'r3']);
+    expect(items.map((item) => item.id)).toEqual(['r1']);
     expect(items[0]?.requesterLabel).toBe('佐藤良子さんの端末');
     expect(items[0]?.subject).toBe('お金を送ってほしいと言われた');
+  });
+
+  it('応答済みで成立を待つ collecting / waiting は受信箱に並べない', () => {
+    // 「未対応」と誤認させないため actionable 一覧から除外する。
+    const items = buildInboxItems(
+      [rec('r1', 'm-1', 'collecting'), rec('r2', 'm-2', 'waiting')],
+      members
+    );
+    expect(items).toEqual([]);
   });
 });
 

@@ -106,6 +106,12 @@ export const UI_COPY = {
   familyJoinCodeLabel: '招待コード',
   familyJoinButton: 'この家族に参加する',
   familyJoinedNote: '別の家族グループに参加しました。',
+  // 参加中の家族の一覧・切り替え
+  myCirclesHeading: '参加中の家族',
+  myCirclesEmpty: 'まだ参加中の家族がありません。',
+  myCirclesActiveLabel: 'いま選んでいる家族です。',
+  myCirclesSwitchButton: 'この家族に切り替える',
+  myCirclesStoppedNote: 'この家族は今、すべての承認を止めています。',
   // 受信箱
   inboxHeading: '届いた確認',
   inboxEmpty: 'いま確認をお願いされているものはありません。',

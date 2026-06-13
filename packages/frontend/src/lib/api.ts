@@ -61,6 +61,13 @@ export interface CircleMember {
   name: string;
 }
 
+/** 参加中の家族グループの 1 件（家族の切り替えに使う）。 */
+export interface MyCircle {
+  id: string;
+  name: string;
+  status: 'normal' | 'stopped';
+}
+
 /** バックエンド POST /api/requests の契約（app.ts）に一致するフィールド名。 */
 export interface RequestInput {
   circleId: string;
@@ -201,11 +208,19 @@ export class ApiClient {
     return body.invite;
   }
 
-  /** GET /api/circles/:id/members。`{ members }` を unwrap して名前付き一覧を返す。 */
-  async listCircleMembers(circleId: string): Promise<CircleMember[]> {
+  /**
+   * GET /api/circles/:id/members。`{ members }` を unwrap して名前付き一覧を返す。
+   * バックエンドは呼び出し元 memberId が当該 circle のメンバーであることを
+   * 要求する（非メンバーへの名簿露出を防ぐ）ため、memberId を必須クエリにする。
+   */
+  async listCircleMembers(
+    circleId: string,
+    memberId: string
+  ): Promise<CircleMember[]> {
+    const params = new URLSearchParams({ memberId });
     const body = await this.request<{ members: CircleMember[] }>(
       'GET',
-      `/circles/${circleId}/members`
+      `/circles/${circleId}/members?${params.toString()}`
     );
     return body.members;
   }
@@ -213,22 +228,39 @@ export class ApiClient {
   /**
    * GET /api/circles/:id/requests。受信箱（targetMemberId）・送信箱
    * （requesterMemberId）の絞り込みクエリを組み立て、`{ requests }` を unwrap する。
+   * バックエンドは呼び出し元 memberId を必須にし、非メンバーには履歴を返さない
+   * ため、memberId を常にクエリに含める。
    */
   async listRequests(
     circleId: string,
-    filter?: { targetMemberId?: string; requesterMemberId?: string }
+    filter: {
+      memberId: string;
+      targetMemberId?: string;
+      requesterMemberId?: string;
+    }
   ): Promise<RequestRecord[]> {
-    const params = new URLSearchParams();
-    if (filter?.targetMemberId !== undefined) {
+    const params = new URLSearchParams({ memberId: filter.memberId });
+    if (filter.targetMemberId !== undefined) {
       params.set('targetMemberId', filter.targetMemberId);
     }
-    if (filter?.requesterMemberId !== undefined) {
+    if (filter.requesterMemberId !== undefined) {
       params.set('requesterMemberId', filter.requesterMemberId);
     }
-    const query = params.toString();
-    const path = `/circles/${circleId}/requests${query === '' ? '' : `?${query}`}`;
+    const path = `/circles/${circleId}/requests?${params.toString()}`;
     const body = await this.request<{ requests: RequestRecord[] }>('GET', path);
     return body.requests;
+  }
+
+  /**
+   * GET /api/members/:id/circles。参加中の家族グループ一覧を `{ circles }` 封筒
+   * から unwrap する。家族の切り替え（アクティブな family の選択）に使う。
+   */
+  async listMyCircles(memberId: string): Promise<MyCircle[]> {
+    const body = await this.request<{ circles: MyCircle[] }>(
+      'GET',
+      `/members/${memberId}/circles`
+    );
+    return body.circles;
   }
 
   /** 取り消しのレスポンスは `{ invite: { id, status } }` のみを含む。 */

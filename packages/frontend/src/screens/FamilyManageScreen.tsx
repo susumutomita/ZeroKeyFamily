@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import type { CircleMember } from '../lib/api';
+import type { CircleMember, MyCircle } from '../lib/api';
 import { UI_COPY } from '../lib/copy';
 
 interface Props {
@@ -7,10 +7,14 @@ interface Props {
   circleId: string;
   /** 参加メンバー（名前つき・参加順）。 */
   members: CircleMember[];
+  /** 参加中の家族グループ一覧（アクティブな家族の切り替えに使う）。 */
+  myCircles: MyCircle[];
   /** 発行済みの招待コード（invite.id）。未発行なら null。 */
   inviteCode: string | null;
   onCreateInvite: () => void | Promise<void>;
   onJoin: (inviteCode: string) => void | Promise<void>;
+  /** 参加中の家族から別の家族へアクティブを切り替える。 */
+  onSwitchCircle: (circleId: string) => void | Promise<void>;
   onBack: () => void;
 }
 
@@ -22,9 +26,11 @@ interface Props {
 export function FamilyManageScreen({
   circleId,
   members,
+  myCircles,
   inviteCode,
   onCreateInvite,
   onJoin,
+  onSwitchCircle,
   onBack,
 }: Props) {
   const joinFieldId = useId();
@@ -38,6 +44,36 @@ export function FamilyManageScreen({
         <span className="field-label">{UI_COPY.familyCodeLabel}</span>
         <p className="code-value">{circleId}</p>
       </div>
+
+      <h2 className="section-title">{UI_COPY.myCirclesHeading}</h2>
+      {myCircles.length === 0 ? (
+        <p className="meta">{UI_COPY.myCirclesEmpty}</p>
+      ) : (
+        <ul className="circle-list">
+          {myCircles.map((circle) => {
+            const isActive = circle.id === circleId;
+            return (
+              <li key={circle.id} className="circle-list__item">
+                <p className="main-copy">{circle.name}</p>
+                {circle.status === 'stopped' && (
+                  <p className="meta">{UI_COPY.myCirclesStoppedNote}</p>
+                )}
+                {isActive ? (
+                  <p className="meta">{UI_COPY.myCirclesActiveLabel}</p>
+                ) : (
+                  <button
+                    type="button"
+                    className="button button--quiet"
+                    onClick={() => onSwitchCircle(circle.id)}
+                  >
+                    {UI_COPY.myCirclesSwitchButton}
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
 
       <h2 className="section-title">{UI_COPY.familyMembersHeading}</h2>
       {members.length === 0 ? (

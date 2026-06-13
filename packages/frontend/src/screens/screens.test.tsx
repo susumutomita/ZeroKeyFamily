@@ -74,9 +74,14 @@ describe('W-07 家族の管理', () => {
       { id: 'm-1', name: '佐藤良子' },
       { id: 'm-2', name: '佐藤太郎' },
     ],
+    myCircles: [
+      { id: 'circle-1234', name: '佐藤家', status: 'normal' as const },
+      { id: 'circle-5678', name: '田中家', status: 'normal' as const },
+    ],
     inviteCode: null,
     onCreateInvite: () => {},
     onJoin: () => {},
+    onSwitchCircle: () => {},
     onBack: () => {},
   };
 
@@ -104,6 +109,47 @@ describe('W-07 家族の管理', () => {
     const html = renderToStaticMarkup(<FamilyManageScreen {...baseProps} />);
     expect(html).not.toContain('✓');
     expect(html).not.toContain('status-heading--verified');
+  });
+
+  it('参加中の家族を一覧表示し、アクティブな家族には切り替えボタンを出さない', () => {
+    const html = renderToStaticMarkup(<FamilyManageScreen {...baseProps} />);
+    expect(html).toContain('参加中の家族');
+    expect(html).toContain('佐藤家');
+    expect(html).toContain('田中家');
+    // アクティブな家族には「いま選んでいる」表示を出す。
+    expect(html).toContain('いま選んでいる家族です。');
+  });
+
+  it('アクティブでない家族には切り替えボタンを出す（元家族へ戻れる導線）', () => {
+    const html = renderToStaticMarkup(<FamilyManageScreen {...baseProps} />);
+    expect(html).toContain('この家族に切り替える');
+  });
+
+  it('参加中の家族が 1 つだけなら切り替えボタンを出さない', () => {
+    const html = renderToStaticMarkup(
+      <FamilyManageScreen
+        {...baseProps}
+        myCircles={[
+          { id: 'circle-1234', name: '佐藤家', status: 'normal' as const },
+        ]}
+      />
+    );
+    expect(html).not.toContain('この家族に切り替える');
+    expect(html).toContain('いま選んでいる家族です。');
+  });
+
+  it('停止中の家族には停止中の案内を出し、成功色やチェックマークを使わない', () => {
+    const html = renderToStaticMarkup(
+      <FamilyManageScreen
+        {...baseProps}
+        myCircles={[
+          { id: 'circle-1234', name: '佐藤家', status: 'normal' as const },
+          { id: 'circle-5678', name: '田中家', status: 'stopped' as const },
+        ]}
+      />
+    );
+    expect(html).toContain('この家族は今、すべての承認を止めています。');
+    expect(html).not.toContain('✓');
   });
 });
 

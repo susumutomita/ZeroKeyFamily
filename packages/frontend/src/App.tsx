@@ -3,6 +3,7 @@ import {
   api,
   type CircleMember,
   cancelAndFetchRequest,
+  type MyCircle,
   type RequestRecord,
   type RequestStatus,
   respondAndFetchRequest,
@@ -48,16 +49,17 @@ const DEVICE_ID_STORAGE_KEY = 'zerokey-device-id';
 const CIRCLE_ID_STORAGE_KEY = 'zerokey-circle-id';
 const MEMBER_NAME_STORAGE_KEY = 'zerokey-member-name';
 
-/** 受信箱に並べる未確定の状態。 */
-const UNSETTLED_STATUSES: ReadonlySet<RequestStatus> = new Set<RequestStatus>([
-  'unanswered',
-  'collecting',
-  'waiting',
-]);
-
-/** その確認がまだ確定していない（受信箱に並べる）かを判定する。 */
+/**
+ * 受信箱に「届いた確認」として並べるのは、自分の応答がまだ必要な
+ * unanswered のみ。collecting / waiting（応答済みで成立を待つ状態）や
+ * 確定済み（approved / rejected / expired / verification_failed /
+ * invalidated）は actionable 一覧に出さない。応答済み・時間経過で確定する
+ * 状態を「未対応」と誤認させないため（docs/product/failure-and-offline-
+ * behaviors.md「不明な状態を安心情報として表示しない」「部分的な成功を成功
+ * として表示しない」: 未確認と確定の混同を禁止する）。
+ */
 export function isUnsettled(status: RequestStatus): boolean {
-  return UNSETTLED_STATUSES.has(status);
+  return status === 'unanswered';
 }
 
 /**
@@ -122,6 +124,7 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
   const [view, setView] = useState<View>({ name: 'home' });
   const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
   const [members, setMembers] = useState<CircleMember[]>([]);
+  const [myCircles, setMyCircles] = useState<MyCircle[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -139,20 +142,36 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
   /** 宛先候補に使う家族メンバー（自分を含む生の一覧）を取り直す。 */
   const refreshMembers = useCallback(
     async (current: SelfState): Promise<CircleMember[]> => {
-      const list = await api.listCircleMembers(current.circleId);
+      // バックエンドは呼び出し元 memberId を必須にしている（非メンバーへの
+      // 名簿露出を防ぐ）。自分の memberId を必ず渡す。
+      const list = await api.listCircleMembers(
+        current.circleId,
+        current.memberId
+      );
       setMembers(list);
       return list;
     },
     []
   );
 
-  // 自分が確定したら家族メンバーを読み込む（宛先候補・名前解決に使う）。
+  /** 参加中の家族グループ一覧（家族の切り替えに使う）を取り直す。 */
+  const refreshMyCircles = useCallback(
+    async (current: SelfState): Promise<MyCircle[]> => {
+      const list = await api.listMyCircles(current.memberId);
+      setMyCircles(list);
+      return list;
+    },
+    []
+  );
+
+  // 自分が確定したら家族メンバーと参加中の家族一覧を読み込む。
   useEffect(() => {
     if (self === null) {
       return;
     }
     refreshMembers(self).catch(showError);
-  }, [self, refreshMembers, showError]);
+    refreshMyCircles(self).catch(showError);
+  }, [self, refreshMembers, refreshMyCircles, showError]);
 
   /** 初回オンボーディング: 名前登録 → メンバー作成 → 家族グループ作成。 */
   const handleOnboard = useCallback(
@@ -306,11 +325,12 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
     setNotice(null);
     try {
       await refreshMembers(self);
+      await refreshMyCircles(self);
     } catch (error) {
       showError(error);
     }
     setView({ name: 'family' });
-  }, [self, refreshMembers, showError]);
+  }, [self, refreshMembers, refreshMyCircles, showError]);
 
   const handleCreateInvite = useCallback(async () => {
     if (self === null) {
@@ -344,6 +364,32 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
         setInviteCode(null);
         setNotice(UI_COPY.familyJoinedNote);
         await refreshMembers(next);
+        // 参加先が増えたので一覧を取り直す（元家族へ戻る導線を保つ）。
+        await refreshMyCircles(next);
+      } catch (error) {
+        showError(error);
+      }
+    },
+    [self, refreshMembers, refreshMyCircles, showError]
+  );
+
+  /**
+   * アクティブな家族を切り替える。join 時の上書きで元家族へ戻れなくなる欠陥を
+   * 解消するため、参加中の家族一覧から選んで localStorage の circleId を
+   * 差し替え、宛先候補・受信箱・メンバー一覧を新しいアクティブ家族で取り直す。
+   */
+  const handleSwitchCircle = useCallback(
+    async (circleId: string) => {
+      if (self === null || circleId === self.circleId) {
+        return;
+      }
+      localStorage.setItem(CIRCLE_ID_STORAGE_KEY, circleId);
+      const next = { ...self, circleId };
+      setSelf(next);
+      setInviteCode(null);
+      setInboxItems([]);
+      try {
+        await refreshMembers(next);
       } catch (error) {
         showError(error);
       }
@@ -360,6 +406,7 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
     try {
       const list = await refreshMembers(self);
       const requests = await api.listRequests(self.circleId, {
+        memberId: self.memberId,
         targetMemberId: self.memberId,
       });
       setInboxItems(buildInboxItems(requests, list));
@@ -432,9 +479,11 @@ export function App({ keyStore = new IndexedDbKeyStore() }: AppProps) {
         <FamilyManageScreen
           circleId={self.circleId}
           members={members}
+          myCircles={myCircles}
           inviteCode={inviteCode}
           onCreateInvite={handleCreateInvite}
           onJoin={handleJoinFamily}
+          onSwitchCircle={handleSwitchCircle}
           onBack={goHome}
         />
       )}

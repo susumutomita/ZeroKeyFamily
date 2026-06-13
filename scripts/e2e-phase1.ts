@@ -133,8 +133,8 @@ async function main(): Promise<void> {
       confirmed.circleId === circle.id
     );
 
-    // 3. 家族メンバー一覧に二人が表示名つきで並ぶ。
-    const members = await api.listCircleMembers(circle.id);
+    // 3. 家族メンバー一覧に二人が表示名つきで並ぶ（呼び出し元はメンバー本人）。
+    const members = await api.listCircleMembers(circle.id, hanako.memberId);
     check(
       '家族メンバー一覧に花子と太郎が並ぶ',
       members.map((m) => m.name).join(',') === '花子,太郎'
@@ -155,6 +155,7 @@ async function main(): Promise<void> {
 
     // 5. 太郎の受信箱に届いている。
     const inbox = await api.listRequests(circle.id, {
+      memberId: taro.memberId,
       targetMemberId: taro.memberId,
     });
     check(
@@ -227,10 +228,8 @@ async function main(): Promise<void> {
       verificationRejected = true;
     }
     const after = await api.getRequest(request3.id);
-    check(
-      '改ざん署名は確認済みにならない',
-      verificationRejected || after.status !== 'approved'
-    );
+    check('改ざん署名は応答が拒否される', verificationRejected);
+    check('改ざん署名で確認済みにならない', after.status !== 'approved');
   } finally {
     server.stop(true);
     db.close();
