@@ -31,6 +31,8 @@ export interface MemberRecord {
 
 export interface CircleInput {
   name: string;
+  /** バックエンドは作成者メンバー ID を必須にしている（app.ts）。 */
+  creatorMemberId: string;
 }
 
 export interface CircleRecord {
@@ -49,6 +51,14 @@ export interface InviteRecord {
   id: string;
   status: 'pending' | 'waiting' | 'confirmed' | 'cancelled';
   confirmableAt?: string;
+  /** 確認後に切り替える参加先 circle（confirm のレスポンスに含まれる）。 */
+  circleId?: string;
+}
+
+/** 家族メンバー一覧の 1 件（宛先候補・参加メンバー表示に使う）。 */
+export interface CircleMember {
+  id: string;
+  name: string;
 }
 
 /** バックエンド POST /api/requests の契約（app.ts）に一致するフィールド名。 */
@@ -176,14 +186,49 @@ export class ApiClient {
     return body.invite;
   }
 
-  /** 確認のレスポンスは `{ invite: { id, status } }` のみを含む。 */
+  /**
+   * 招待確認。バックエンドは inviteeMemberId をボディで必須にしている（app.ts）。
+   * レスポンスは `{ invite: { id, status, circleId } }`。参加先 circle を
+   * 切り替えるため circleId を含めて返す。
+   */
   async confirmInvite(
-    inviteId: string
-  ): Promise<Pick<InviteRecord, 'id' | 'status'>> {
+    inviteId: string,
+    input: { inviteeMemberId: string }
+  ): Promise<Pick<InviteRecord, 'id' | 'status' | 'circleId'>> {
     const body = await this.request<{
-      invite: Pick<InviteRecord, 'id' | 'status'>;
-    }>('POST', `/invites/${inviteId}/confirm`);
+      invite: Pick<InviteRecord, 'id' | 'status' | 'circleId'>;
+    }>('POST', `/invites/${inviteId}/confirm`, input);
     return body.invite;
+  }
+
+  /** GET /api/circles/:id/members。`{ members }` を unwrap して名前付き一覧を返す。 */
+  async listCircleMembers(circleId: string): Promise<CircleMember[]> {
+    const body = await this.request<{ members: CircleMember[] }>(
+      'GET',
+      `/circles/${circleId}/members`
+    );
+    return body.members;
+  }
+
+  /**
+   * GET /api/circles/:id/requests。受信箱（targetMemberId）・送信箱
+   * （requesterMemberId）の絞り込みクエリを組み立て、`{ requests }` を unwrap する。
+   */
+  async listRequests(
+    circleId: string,
+    filter?: { targetMemberId?: string; requesterMemberId?: string }
+  ): Promise<RequestRecord[]> {
+    const params = new URLSearchParams();
+    if (filter?.targetMemberId !== undefined) {
+      params.set('targetMemberId', filter.targetMemberId);
+    }
+    if (filter?.requesterMemberId !== undefined) {
+      params.set('requesterMemberId', filter.requesterMemberId);
+    }
+    const query = params.toString();
+    const path = `/circles/${circleId}/requests${query === '' ? '' : `?${query}`}`;
+    const body = await this.request<{ requests: RequestRecord[] }>('GET', path);
+    return body.requests;
   }
 
   /** 取り消しのレスポンスは `{ invite: { id, status } }` のみを含む。 */

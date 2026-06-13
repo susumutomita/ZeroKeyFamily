@@ -15,6 +15,8 @@ interface Props {
   targets: { id: string; name: string; relation?: string }[];
   onSubmit: (values: RequestFormValues) => void;
   onBack?: () => void;
+  /** 宛先が 0 人のときの家族管理への導線。 */
+  onManageFamily?: () => void;
 }
 
 const SUBJECT_PRESETS = [
@@ -34,7 +36,12 @@ const DEADLINE_CHOICES = [
  * W-02 確認要求の作成。
  * 金額・送金先・理由は必須。未入力時は送信ボタンを無効化し、省略経路を設けない。
  */
-export function CreateRequestScreen({ targets, onSubmit, onBack }: Props) {
+export function CreateRequestScreen({
+  targets,
+  onSubmit,
+  onBack,
+  onManageFamily,
+}: Props) {
   const formId = useId();
   const [targetId, setTargetId] = useState(targets[0]?.id ?? '');
   const [subject, setSubject] = useState<string>(SUBJECT_PRESETS[0]);
@@ -59,6 +66,33 @@ export function CreateRequestScreen({ targets, onSubmit, onBack }: Props) {
       deadlineMinutes,
     });
   };
+
+  // 宛先候補が 0 人のときは確認を作れない。家族追加へ誘導する
+  // （必須項目検証はそのまま）。
+  if (targets.length === 0) {
+    return (
+      <section className="screen screen--form">
+        <h1>確認の前に</h1>
+        <p className="main-copy">{UI_COPY.noTargetsNote}</p>
+        <div className="actions actions--stacked">
+          <button
+            type="button"
+            className="button button--primary button--large"
+            onClick={() => onManageFamily?.()}
+          >
+            {UI_COPY.goManageFamilyButton}
+          </button>
+          <button
+            type="button"
+            className="button button--quiet"
+            onClick={onBack}
+          >
+            {UI_COPY.backButton}
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="screen screen--form">

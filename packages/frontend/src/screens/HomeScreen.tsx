@@ -13,6 +13,8 @@ interface Props {
   recentEntries: RecentEntry[];
   onCreateRequest: () => void;
   onHelp: () => void;
+  onManageFamily?: () => void;
+  onOpenInbox?: () => void;
   onOpenEntry?: (entry: RecentEntry) => void;
 }
 
@@ -24,6 +26,8 @@ export function HomeScreen({
   recentEntries,
   onCreateRequest,
   onHelp,
+  onManageFamily,
+  onOpenInbox,
   onOpenEntry,
 }: Props) {
   return (
@@ -36,6 +40,20 @@ export function HomeScreen({
           onClick={onCreateRequest}
         >
           {UI_COPY.createRequestButton}
+        </button>
+        <button
+          type="button"
+          className="button button--large"
+          onClick={() => onOpenInbox?.()}
+        >
+          {UI_COPY.inboxButton}
+        </button>
+        <button
+          type="button"
+          className="button button--large"
+          onClick={() => onManageFamily?.()}
+        >
+          {UI_COPY.manageFamilyButton}
         </button>
         <button
           type="button"

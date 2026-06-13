@@ -88,4 +88,31 @@ export const UI_COPY = {
   closeButton: '閉じる',
   helpShortButton: '困ったとき',
   backButton: 'もどる',
+  // オンボーディング（初回の名前登録）
+  onboardingHeading: 'はじめに、お名前を教えてください',
+  onboardingNote:
+    'この名前は家族の画面に表示されます。あなたの端末でだけ鍵を作り、家族グループも用意します。',
+  onboardingNameLabel: 'お名前（必須）',
+  onboardingStartButton: 'はじめる',
+  // W-07 家族の管理
+  familyManageHeading: '家族の管理',
+  familyCodeLabel: '家族コード',
+  familyMembersHeading: 'この家族のメンバー',
+  familyInviteButton: 'この家族に招待する',
+  familyInviteCodeLabel: '招待コード',
+  familyInviteCodeNote:
+    'このコードを、招待したい家族に伝えてください。相手が入力すると同じ家族になります。',
+  familyJoinHeading: '別の家族に参加する',
+  familyJoinCodeLabel: '招待コード',
+  familyJoinButton: 'この家族に参加する',
+  familyJoinedNote: '別の家族グループに参加しました。',
+  // 受信箱
+  inboxHeading: '届いた確認',
+  inboxEmpty: 'いま確認をお願いされているものはありません。',
+  inboxOpenButton: '内容を見て確認する',
+  inboxButton: '届いた確認',
+  manageFamilyButton: '家族の管理',
+  // 宛先 0 人のとき
+  noTargetsNote: '先に家族を追加してください。',
+  goManageFamilyButton: '家族の管理へ',
 } as const;

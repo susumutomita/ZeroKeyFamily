@@ -9,7 +9,7 @@
 
 import { Database } from 'bun:sqlite';
 import { createApp } from '../packages/backend/src/app';
-import { systemClock } from '../packages/backend/src/clock';
+import type { Clock } from '../packages/backend/src/clock';
 import { migrate } from '../packages/backend/src/db';
 import {
   ApiClient,
@@ -24,6 +24,17 @@ import {
   generateDeviceKeyPair,
   signPayload,
 } from '../packages/frontend/src/lib/crypto';
+
+/** 待機満了などの時間経過を再現できる可変クロック。 */
+class MutableClock implements Clock {
+  private current = new Date();
+  now(): Date {
+    return new Date(this.current.getTime());
+  }
+  advanceMinutes(minutes: number): void {
+    this.current = new Date(this.current.getTime() + minutes * 60_000);
+  }
+}
 
 let failures = 0;
 function check(label: string, condition: boolean): void {
@@ -61,20 +72,22 @@ async function register(api: ApiClient, name: string): Promise<Person> {
   return { memberId: member.id, deviceId: member.deviceId, ...keys };
 }
 
+interface SignableRequest {
+  id: string;
+  circleId: string;
+  requesterMemberId: string;
+  targetMemberId: string;
+  subject: string;
+  amount: number;
+  beneficiary: string;
+  reason: string;
+  deadline: string;
+  nonce: string;
+}
+
 async function sign(
   person: Person,
-  request: {
-    id: string;
-    circleId: string;
-    requesterMemberId: string;
-    targetMemberId: string;
-    subject: string;
-    amount: number;
-    beneficiary: string;
-    reason: string;
-    deadline: string;
-    nonce: string;
-  },
+  request: SignableRequest,
   kind: 'approve' | 'reject'
 ): Promise<string> {
   return signPayload(
@@ -86,9 +99,12 @@ async function sign(
 async function main(): Promise<void> {
   const db = new Database(':memory:');
   migrate(db);
-  const app = createApp({ db, clock: systemClock });
+  const clock = new MutableClock();
+  const app = createApp({ db, clock });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   const api = new ApiClient(`http://localhost:${server.port}`);
+  const deadline = (): string =>
+    new Date(clock.now().getTime() + 30 * 60_000).toISOString();
 
   try {
     // 1. 花子が登録し家族を作る。
@@ -124,8 +140,7 @@ async function main(): Promise<void> {
       members.map((m) => m.name).join(',') === '花子,太郎'
     );
 
-    // 4. 花子が太郎宛てに確認要求を作る（低額・高リスクなし）。
-    const deadline = new Date(Date.now() + 30 * 60_000).toISOString();
+    // 4. 花子が太郎宛てに確認要求を作る。
     const request = await api.createRequest({
       circleId: circle.id,
       requesterMemberId: hanako.memberId,
@@ -134,7 +149,7 @@ async function main(): Promise<void> {
       amount: 5000,
       beneficiary: '○○銀行 1234567',
       reason: '会社のお金をなくしたと言われた',
-      deadline,
+      deadline: deadline(),
     });
     check('作成直後は未応答である', request.status === 'unanswered');
 
@@ -147,20 +162,24 @@ async function main(): Promise<void> {
       inbox.some((r) => r.id === request.id)
     );
 
-    // 6. 太郎が自分の端末鍵で承認署名する → 確認済みになる。
+    // 6. 太郎が承認署名する。初回送金先のため 30 分の待機に入る（即時承認しない）。
     const approveSig = await sign(taro, request, 'approve');
-    const approved = await respondAndFetchRequest(api, request.id, {
+    const afterApprove = await respondAndFetchRequest(api, request.id, {
       deviceId: taro.deviceId,
       kind: 'approve',
       signature: approveSig,
     });
-    check('対象本人の承認署名で確認済みになる', approved.status === 'approved');
+    check(
+      '初回送金先への承認は 30 分の待機に入る（即時確認済みにしない）',
+      afterApprove.status === 'waiting'
+    );
 
-    // 7. 花子が結果を取得しても確認済み。
-    const fetched = await api.getRequest(request.id);
-    check('送信者の取得でも確認済み', fetched.status === 'approved');
+    // 7. 30 分経過後に取得すると確認済みへ確定する。
+    clock.advanceMinutes(31);
+    const settled = await api.getRequest(request.id);
+    check('待機満了後の取得で確認済みになる', settled.status === 'approved');
 
-    // 8. 別要求を太郎が拒否すると拒否で確定する。
+    // 8. 別要求を太郎が拒否すると即座に拒否で確定する。
     const request2 = await api.createRequest({
       circleId: circle.id,
       requesterMemberId: hanako.memberId,
@@ -169,7 +188,7 @@ async function main(): Promise<void> {
       amount: 3000,
       beneficiary: '△△銀行 7654321',
       reason: '身に覚えがない',
-      deadline,
+      deadline: deadline(),
     });
     const rejectSig = await sign(taro, request2, 'reject');
     const rejected = await respondAndFetchRequest(api, request2.id, {
@@ -188,7 +207,7 @@ async function main(): Promise<void> {
       amount: 4000,
       beneficiary: '○○銀行 1234567',
       reason: 'テスト',
-      deadline,
+      deadline: deadline(),
     });
     // 署名内容を改ざん（金額を変えたペイロードに署名）。
     const tampered = await signPayload(
