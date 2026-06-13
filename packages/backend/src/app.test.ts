@@ -1238,3 +1238,65 @@ describe('回答期限の範囲検証', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('家族メンバー一覧', () => {
+  it('表示名つきで参加中のメンバーを参加順に返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx, 3);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/members`
+    );
+    expect(res.status).toBe(200);
+    const { members } = (await res.json()) as {
+      members: { id: string; name: string }[];
+    };
+    expect(members.map((m) => m.name)).toEqual(['花子', '太郎', '次郎']);
+    expect(members[0]?.id).toBe(family.requester.memberId);
+  });
+
+  it('存在しない家族グループは 404 を返す', async () => {
+    const ctx = createTestContext();
+    const res = await ctx.app.request('/api/circles/missing/members');
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('確認要求の一覧', () => {
+  it('対象メンバー宛ての受信箱を新しい順に返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const first = await createRequest(ctx, family);
+    ctx.clock.advanceMinutes(1);
+    const second = await createRequest(ctx, family);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/requests?targetMemberId=${family.target.memberId}`
+    );
+    expect(res.status).toBe(200);
+    const { requests } = (await res.json()) as { requests: RequestJson[] };
+    expect(requests.map((r) => r.id)).toEqual([second.id, first.id]);
+  });
+
+  it('送信者で絞り込める', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    await createRequest(ctx, family);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/requests?requesterMemberId=${family.requester.memberId}`
+    );
+    const { requests } = (await res.json()) as { requests: RequestJson[] };
+    expect(requests.length).toBe(1);
+    expect(requests[0]?.requesterMemberId).toBe(family.requester.memberId);
+  });
+
+  it('一覧の読み取り時に期限超過した要求を expired へ確定する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    ctx.clock.advanceMinutes(31);
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/requests?targetMemberId=${family.target.memberId}`
+    );
+    const { requests } = (await res.json()) as { requests: RequestJson[] };
+    expect(requests.find((r) => r.id === request.id)?.status).toBe('expired');
+  });
+});

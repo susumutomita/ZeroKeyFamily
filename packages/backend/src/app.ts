@@ -317,6 +317,51 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
+  // --- 家族メンバー一覧（表示名つき。確認要求の宛先候補に使う） ---
+  app.get('/api/circles/:id/members', (c) => {
+    const circle = getCircle(c.req.param('id'));
+    if (!circle) {
+      return c.json({ error: 'circle_not_found' }, 404);
+    }
+    const members = db
+      .query<{ id: string; name: string }, [string]>(
+        `SELECT m.id AS id, m.name AS name
+         FROM circle_members cm JOIN members m ON m.id = cm.member_id
+         WHERE cm.circle_id = ? AND cm.left_at IS NULL
+         ORDER BY cm.joined_at ASC, cm.rowid ASC`
+      )
+      .all(circle.id);
+    return c.json({ members });
+  });
+
+  // --- 確認要求の一覧（受信箱・送信箱）。読み取り時に状態を確定する。 ---
+  app.get('/api/circles/:id/requests', (c) => {
+    const circle = getCircle(c.req.param('id'));
+    if (!circle) {
+      return c.json({ error: 'circle_not_found' }, 404);
+    }
+    const targetMemberId = c.req.query('targetMemberId');
+    const requesterMemberId = c.req.query('requesterMemberId');
+    const conditions = ['circle_id = ?'];
+    const params: string[] = [circle.id];
+    if (isNonEmptyString(targetMemberId)) {
+      conditions.push('target_member_id = ?');
+      params.push(targetMemberId);
+    }
+    if (isNonEmptyString(requesterMemberId)) {
+      conditions.push('requester_member_id = ?');
+      params.push(requesterMemberId);
+    }
+    const rows = db
+      .query<RequestRow, string[]>(
+        `SELECT * FROM requests WHERE ${conditions.join(' AND ')}
+         ORDER BY created_at DESC`
+      )
+      .all(...params);
+    const requests = rows.map((row) => toRequestJson(refreshRequest(row)));
+    return c.json({ requests });
+  });
+
   // --- 招待 ---
   app.post('/api/invites', async (c) => {
     const body = await readJson(c);
