@@ -1,5 +1,37 @@
 # Plan.md
 
+### Phase 1 Web プロダクトのエンドツーエンド完成 - 2026-06-13
+
+#### 目的
+
+「今はテンプレートしかない」状態（核ジャーニーが UI 上で完結しない）を解消し、Phase 1 の Web プロダクトを実バックエンドに対して動く製品に仕上げる。ネイティブアプリ・ZKP/MPC/FHE・ブロックチェイン・外部監査/審査は対象外（Issue 1 の Phase 2 / プロセスゲート）。
+
+#### 制約
+
+- 実 DB・実 WebCrypto・実 HTTP・実レンダリング（モック禁止）。TDD・日本語 BDD。
+- 文言は docs/product/safety-copy-guide.md 準拠。承認済み以外に成功色・チェックマークを使わない。
+- ゲート（architecture-harness → make before-commit → e2e ゲート）を全 Green にするまで未完了。
+
+#### タスク
+
+1. バックエンド: 家族メンバー一覧 / 確認要求一覧エンドポイント追加、招待確認に circleId 追加（完了）。
+2. フロントエンド: createCircle/confirmInvite の契約修正、メンバー一覧・要求一覧クライアント、名前オンボーディング、家族管理画面（コード共有・参加）、受信箱、宛先候補の実データ化（並列エージェント実装中）。
+3. README / package.json を実プロダクト記述へ更新（完了）、scripts/e2e-phase1.ts 追加（完了）。
+4. e2e ゲート実行 → 全ゲート → PR。
+
+#### 検証手順
+
+- `bun scripts/e2e-phase1.ts` が実バックエンド + 実フロント API で核ジャーニー（家族作成・招待・参加・メンバー一覧・要求作成・受信箱・承認・拒否・改ざん拒否）を通す。
+- `make before-commit` と各 workspace の test/typecheck/build が Green。
+
+#### 進捗ログ
+
+- 2026-06-13: ブランチ `claude/complete-phase1-app` で着手。現状診断で「createCircle が creatorMemberId 未送信で実サーバー 400」「confirmInvite が body 未送信」「宛先リスト空・受信箱/家族設定 UI なし」を特定。バックエンドに 2 エンドポイント追加 + 招待確認 circleId 追加（テスト 66 件 Green、live smoke 確認）。README/package.json 刷新、e2e ゲート作成。フロント実装を並列エージェントに委任。
+
+#### 振り返り
+
+- （完了時に記入する。）
+
 ### ZeroKey Family プロダクト定義ドキュメント（Issue 1 / 2 / 3） - 2026-06-10
 
 #### 目的
