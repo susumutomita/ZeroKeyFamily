@@ -3,6 +3,7 @@ import type { Context } from 'hono';
 import { Hono } from 'hono';
 import type { Clock } from './clock';
 import {
+  canonicalAuthChallenge,
   canonicalReleasePayload,
   canonicalResponsePayload,
   type ResponseKind,
@@ -25,6 +26,10 @@ const MAX_DEADLINE_OFFSET_MS = 24 * 60 * 60_000;
 // 監査証跡の 1 ページ既定件数と上限。追記専用ログの無制限読み取りを避ける。
 const DEFAULT_AUDIT_LIMIT = 100;
 const MAX_AUDIT_LIMIT = 500;
+
+// 端末セッション認証（ADR-0004）。チャレンジ TTL 2 分・セッション TTL 12 時間。
+const AUTH_CHALLENGE_TTL_MS = 2 * 60_000;
+const AUTH_SESSION_TTL_MS = 12 * 60 * 60_000;
 
 const TERMINAL_REQUEST_STATUSES = new Set([
   'approved',
@@ -101,6 +106,23 @@ interface AuditRow {
   target_id: string | null;
   summary: string;
   created_at: string;
+}
+
+interface AuthChallengeRow {
+  nonce: string;
+  device_id: string;
+  created_at: string;
+  expires_at: string;
+  consumed: number;
+}
+
+interface AuthSessionRow {
+  token: string;
+  device_id: string;
+  member_id: string;
+  created_at: string;
+  expires_at: string;
+  revoked: number;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -318,6 +340,44 @@ export function createApp(deps: AppDeps): Hono {
       return { ok: false, res: c.json({ error: 'not_circle_member' }, 403) };
     }
     return { ok: true, circle };
+  };
+
+  // 端末セッション認証（ADR-0004 Phase A）。トークンからメンバー / 端末を解決する。
+  // 要求のたびに端末状態を再確認し、発行後に失効した端末のセッションを無効化する。
+  const verifySession = (
+    token: string | undefined
+  ): { memberId: string; deviceId: string } | null => {
+    if (!isNonEmptyString(token)) {
+      return null;
+    }
+    const session = db
+      .query<AuthSessionRow, [string]>(
+        'SELECT * FROM auth_sessions WHERE token = ?'
+      )
+      .get(token);
+    // revoked は Phase B（明示ログアウト / セッション失効）で立てる前方互換の列。
+    // Phase A では期限切れと端末状態の再確認のみで無効化する。
+    if (!session || session.revoked === 1) {
+      return null;
+    }
+    if (nowMs() > Date.parse(session.expires_at)) {
+      return null;
+    }
+    const device = getDevice(session.device_id);
+    if (device?.status !== 'active') {
+      return null;
+    }
+    return { memberId: session.member_id, deviceId: session.device_id };
+  };
+
+  const bearerToken = (c: Context): string | undefined => {
+    const header = c.req.header('authorization');
+    if (!isNonEmptyString(header)) {
+      return undefined;
+    }
+    // RFC 7235 のスキームは大文字小文字を区別しない。前後空白を許容する。
+    const match = header.match(/^Bearer\s+(.+)$/i);
+    return match?.[1]?.trim() || undefined;
   };
 
   const readJson = async (
@@ -1174,6 +1234,115 @@ export function createApp(deps: AppDeps): Hono {
       .all(circle.id, limit)
       .reverse();
     return c.json({ entries: rows.map(toAuditJson) });
+  });
+
+  // --- 端末セッション認証（ADR-0004 Phase A: ハンドシェイク基盤。未強制） ---
+  // チャレンジ発行: 登録端末にサーバー生成 nonce を渡す。
+  app.post('/api/auth/challenge', async (c) => {
+    const body = await readJson(c);
+    if (!body) {
+      return c.json({ error: 'invalid_body' }, 400);
+    }
+    const { deviceId } = body;
+    if (!isNonEmptyString(deviceId)) {
+      return c.json({ error: 'missing_required_field' }, 400);
+    }
+    const challengeDevice = getDevice(deviceId);
+    if (!challengeDevice) {
+      return c.json({ error: 'device_not_found' }, 404);
+    }
+    // ADR-0004 の拒否マトリックスに従い、失効端末にはチャレンジを発行しない。
+    if (challengeDevice.status !== 'active') {
+      return c.json({ error: 'device_revoked' }, 403);
+    }
+    const nonce = crypto.randomUUID();
+    const expiresAt = new Date(nowMs() + AUTH_CHALLENGE_TTL_MS).toISOString();
+    db.run(
+      `INSERT INTO auth_challenges (nonce, device_id, created_at, expires_at, consumed)
+       VALUES (?, ?, ?, ?, 0)`,
+      [nonce, deviceId, nowIso(), expiresAt]
+    );
+    return c.json({ nonce, expiresAt }, 201);
+  });
+
+  // セッション確立: チャレンジへの端末署名を検証してセッショントークンを発行する。
+  app.post('/api/auth/session', async (c) => {
+    const body = await readJson(c);
+    if (!body) {
+      return c.json({ error: 'invalid_body' }, 400);
+    }
+    const { deviceId, nonce, signature } = body;
+    if (
+      !isNonEmptyString(deviceId) ||
+      !isNonEmptyString(nonce) ||
+      !isNonEmptyString(signature)
+    ) {
+      return c.json({ error: 'missing_required_field' }, 400);
+    }
+    const challenge = db
+      .query<AuthChallengeRow, [string]>(
+        'SELECT * FROM auth_challenges WHERE nonce = ?'
+      )
+      .get(nonce);
+    // nonce が当該端末向けに発行されたものでなければ拒否する。
+    if (!challenge || challenge.device_id !== deviceId) {
+      return c.json({ error: 'invalid_challenge' }, 401);
+    }
+    if (nowMs() > Date.parse(challenge.expires_at)) {
+      return c.json({ error: 'challenge_expired' }, 401);
+    }
+    const device = getDevice(deviceId);
+    if (!device) {
+      return c.json({ error: 'device_not_found' }, 404);
+    }
+    if (device.status !== 'active') {
+      return c.json({ error: 'device_revoked' }, 403);
+    }
+    // nonce を単回使用として原子的に確保する（検証 await 前にリプレイ・二重確立を封じる）。
+    const claim = db.run(
+      'UPDATE auth_challenges SET consumed = 1 WHERE nonce = ? AND consumed = 0',
+      [nonce]
+    );
+    if (claim.changes === 0) {
+      return c.json({ error: 'challenge_already_used' }, 409);
+    }
+    const payload = canonicalAuthChallenge({
+      deviceId,
+      memberId: device.member_id,
+      nonce,
+    });
+    const verified = await verifyEd25519(device.public_key, payload, signature);
+    if (!verified) {
+      return c.json({ error: 'invalid_signature' }, 401);
+    }
+    const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(
+      /-/g,
+      ''
+    );
+    const expiresAt = new Date(nowMs() + AUTH_SESSION_TTL_MS).toISOString();
+    db.run(
+      `INSERT INTO auth_sessions (token, device_id, member_id, created_at, expires_at, revoked)
+       VALUES (?, ?, ?, ?, ?, 0)`,
+      [token, deviceId, device.member_id, nowIso(), expiresAt]
+    );
+    appendAudit({
+      circleId: null,
+      actorMemberId: device.member_id,
+      eventType: 'session_established',
+      targetType: 'device',
+      targetId: deviceId,
+      summary: 'セッションを確立',
+    });
+    return c.json({ token, memberId: device.member_id, expiresAt }, 201);
+  });
+
+  // 現在のセッションのメンバー / 端末を返す（フロントエンドのセッション検証用）。
+  app.get('/api/auth/me', (c) => {
+    const auth = verifySession(bearerToken(c));
+    if (!auth) {
+      return c.json({ error: 'unauthenticated' }, 401);
+    }
+    return c.json({ memberId: auth.memberId, deviceId: auth.deviceId });
   });
 
   return app;

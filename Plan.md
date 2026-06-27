@@ -1,5 +1,41 @@
 # Plan.md
 
+### API 端末セッション認証層 Phase A（Issue 13・基盤） - 2026-06-27
+
+#### 目的
+
+[ADR-0004](./docs/adr/0004-device-session-authentication.md) の段階的ロールアウトに従い、まず非破壊の認証基盤（チャレンジ・レスポンスのハンドシェイク + 短命セッショントークン）を追加する。既存の書き込みエンドポイントへの必須化（actor 導出への移行）とフロントエンド統合は Phase B（基盤 PR のマージ後）に分離し、本フェーズでは既存テストを壊さない。Issue: https://github.com/susumutomita/ZeroKeyFamily/issues/13 とする。
+
+#### 制約
+
+- 実 SQLite・実 WebCrypto・実 HTTP（モック禁止）。TDD・日本語 BDD・カバレッジ維持。
+- content signature（依頼内容への端末署名）の独立性を維持する。
+- 非破壊: 既存の 87 テストを変更しない（書き込み API への必須化は Phase B）。
+- ゲート（architecture-harness → make before-commit → backend test/typecheck/build → e2e）を全 Green にするまで未完了。
+
+#### タスク
+
+1. `crypto.ts` に `canonicalAuthChallenge`（キー辞書順）を追加。
+2. `db.ts` に `auth_challenges` / `auth_sessions` テーブルを追加。
+3. `app.ts` に `POST /api/auth/challenge` / `POST /api/auth/session` / `GET /api/auth/me` と `verifySession` ヘルパーを追加。
+4. 日本語 BDD テスト（チャレンジ発行・セッション確立・不正署名 / 失効端末 / リプレイ / 期限切れ / なりすまし nonce の拒否・/me の認証）を追加。
+
+#### 検証手順
+
+- `bun test`（backend）が Green（既存 + 認証テスト）。
+- `make before-commit` と backend の typecheck / build が Green。
+
+#### 進捗ログ
+
+- 2026-06-27: ブランチ `claude/phase1-session-auth`（`claude/phase1-audit-log` 起点）で着手。ADR-0004 の Phase A を非破壊で実装。crypto に `canonicalAuthChallenge`、db に `auth_challenges` / `auth_sessions`、app に challenge / session / me エンドポイントと `verifySession` を追加。backend テスト 101 件 Green（認証 14 件）、typecheck / build / harness / e2e Green。
+- 2026-06-27: /security-review は指摘 0 件（署名検証はサーバー側再構築、nonce は原子的単回使用、トークンは CSPRNG、要求ごとに端末失効を再確認）。/code-review の指摘を反映。チャレンジ発行を失効端末で 403 化（ADR の拒否マトリックスに整合）、bearerToken を RFC 7235 準拠（大小無視 + trim）に、未知トークン / 不正スキーム / 失効端末チャレンジのテストを追加。ADR-0004 を本実装 PR に同梱し Accepted へ更新（設計 RFC の PR #18 はクローズ）。失敗した認証試行の監査記録は Phase B のフォローアップ化。
+
+#### 振り返り
+
+- **問題**: ADR-0004 を設計 RFC（別 PR #18・main 起点）として分離したため、監査ログ起点で積んだ実装ブランチに ADR ファイルが存在せず、コードからの参照が宙に浮いた。チャレンジ発行が失効端末を弾かず、ADR の拒否マトリックスと不一致だった。
+- **根本原因**: 設計と実装を別ブランチに分離したが、両者は同じ docs/コードを参照するため疎結合にできなかった。ADR-0003 のように設計判断は実装 PR に同梱する方が一貫する。
+- **予防策**: ADR を実装 PR に同梱する方針へ戻し、RFC PR をクローズ。受け入れ基準（拒否マトリックス）を ADR に明記し、実装とテストで機械的に突き合わせた。
+
 ### 監査ログの記録と参照 API（Issue 12） - 2026-06-27
 
 #### 目的

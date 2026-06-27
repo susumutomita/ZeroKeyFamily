@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  canonicalAuthChallenge,
   canonicalReleasePayload,
   canonicalResponsePayload,
   generateEd25519KeyPair,
@@ -76,5 +77,31 @@ describe('Ed25519 署名と検証', () => {
     const payload = canonicalResponsePayload(fields);
     const signature = await signEd25519(pair.privateKey, payload);
     expect(await verifyEd25519('!!!', payload, signature)).toBe(false);
+  });
+});
+
+describe('canonicalAuthChallenge', () => {
+  it('キーを辞書順に並べ purpose を session に固定する', () => {
+    const payload = canonicalAuthChallenge({
+      nonce: 'n-1',
+      memberId: 'm-1',
+      deviceId: 'd-1',
+    });
+    expect(payload).toBe(
+      '{"deviceId":"d-1","memberId":"m-1","nonce":"n-1","purpose":"session"}'
+    );
+  });
+
+  it('登録端末の署名を登録公開鍵で検証できる', async () => {
+    const pair = await generateEd25519KeyPair();
+    const payload = canonicalAuthChallenge({
+      deviceId: 'd-1',
+      memberId: 'm-1',
+      nonce: 'n-1',
+    });
+    const signature = await signEd25519(pair.privateKey, payload);
+    expect(await verifyEd25519(pair.publicKeyBase64, payload, signature)).toBe(
+      true
+    );
   });
 });

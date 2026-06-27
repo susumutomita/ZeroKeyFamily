@@ -50,6 +50,26 @@ export function canonicalReleasePayload(fields: ReleasePayloadFields): string {
   });
 }
 
+export interface AuthChallengeFields {
+  deviceId: string;
+  memberId: string;
+  nonce: string;
+}
+
+/**
+ * 端末セッション確立の canonical 署名ペイロード（キー辞書順）。
+ * 端末は登録鍵でこの文字列に署名し、サーバーは登録公開鍵で検証する。
+ * 設計は docs/adr/0004-device-session-authentication.md を参照。
+ */
+export function canonicalAuthChallenge(fields: AuthChallengeFields): string {
+  return JSON.stringify({
+    deviceId: fields.deviceId,
+    memberId: fields.memberId,
+    nonce: fields.nonce,
+    purpose: 'session',
+  });
+}
+
 const encoder = new TextEncoder();
 
 export function base64ToBytes(value: string): Uint8Array<ArrayBuffer> {
