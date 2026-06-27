@@ -72,5 +72,6 @@
 
 - [プロダクトビジョン](./vision.md)
 - [Trust Claims（信頼保証と限界）](./trust-claims.md)
+- [脅威モデル](./threat-model.md)
 - [用語集](./glossary.md)
 - [商用リリースロードマップ](./roadmap.md)

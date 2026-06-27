@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | ビジョン・Trust Claims・スコープ・用語集 | 完了（[vision.md](./vision.md) / [trust-claims.md](./trust-claims.md) / [scope-and-non-goals.md](./scope-and-non-goals.md) / [glossary.md](./glossary.md)） | https://github.com/susumutomita/ZeroKeyFamily/issues/2 |
 | ユーザージャーニー・ワイヤーフレーム・安全文言・失敗時挙動・ユーザビリティテスト計画 | 完了（[user-journeys.md](./user-journeys.md) / [wireframes.md](./wireframes.md) / [safety-copy-guide.md](./safety-copy-guide.md) / [failure-and-offline-behaviors.md](./failure-and-offline-behaviors.md) / [usability-test-plan.md](./usability-test-plan.md)） | https://github.com/susumutomita/ZeroKeyFamily/issues/3 |
-| 脅威モデル | 未着手（Issue 作成時にここへ追記する） | 未作成 |
+| 脅威モデル | 完了（[threat-model.md](./threat-model.md)） | https://github.com/susumutomita/ZeroKeyFamily/issues/11 |
 
 ### Phase 1: 初期商用リリース
 
@@ -46,7 +46,7 @@
 ### プロダクト
 
 - [x] プロダクト要件・非目標が合意されている（Issue 2 成果物）。
-- [ ] 脅威モデルが合意されている。
+- [x] 脅威モデルが合意されている（[threat-model.md](./threat-model.md)、Issue 11 成果物）。
 - [x] ユーザージャーニーと誤用耐性 UX が定義されている（Issue 3 成果物）。
 - [ ] 高齢者ユーザビリティテストが合格基準を満たしている（[計画](./usability-test-plan.md)）。
 
@@ -96,4 +96,5 @@
 - [プロダクトビジョン](./vision.md)
 - [Trust Claims（信頼保証と限界）](./trust-claims.md)
 - [スコープと非目標](./scope-and-non-goals.md)
+- [脅威モデル](./threat-model.md)
 - [用語集](./glossary.md)

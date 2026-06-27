@@ -76,6 +76,43 @@
 - **根本原因**: 「記録すべきイベント」を成功操作中心に列挙し、脅威モデルの主目的（不正試行の事後追跡）を網羅していなかった。actor の意味（実行者）と、認証層が無い現状（呼び出し元を証明できない）の整合を初版で詰めていなかった。
 - **予防策**: 認可拒否を監査対象に含め、actor を断定できない操作は NULL とし限界を ADR と Issue 13 へ明示。読み取り認可をヘルパーへ一本化し drift を防止。追記専用の機械検証はフォローアップ（harness invariant）として残す。
 
+### Phase 1 完成に向けた段階的実装（/loop オーケストレーション） - 2026-06-27
+
+#### 目的
+
+「完成させて必要な機能を Issue に切って段階的に実装する」という goal を、Phase 1（初期商用リリース相当）のうち本リポジトリのコードで実装可能な範囲に対して遂行する。ネイティブアプリ・ZKP / MPC / FHE・ブロックチェイン・独立した暗号レビュー / 侵入テスト / ストア審査は対象外（[スコープと非目標](./docs/product/scope-and-non-goals.md) と README のとおり Phase 2 以降または外部プロセス）。
+
+#### 制約
+
+- 作業順序（AGENTS.md）: ドキュメント更新 → リファクタリング → 機能追加。
+- 実 DB・実 WebCrypto・実 HTTP・実レンダリング（モック禁止）。TDD・日本語 BDD・カバレッジ維持。
+- 文言は [安全文言ガイド](./docs/product/safety-copy-guide.md) 準拠。承認済み以外に成功色・チェックマークを使わない。
+- ゲート（architecture-harness → make before-commit → /review → /security-review → /simplify）を全 Green にするまで各 Issue は未完了。
+- 新機能は `/feature` フロー、Issue は `#番号` 引用禁止（フル URL か「Issue 番号」）。
+
+#### タスク（backlog として GitHub Issue に分割）
+
+1. 脅威モデルの策定（Phase 0 ゲート / docs）。
+2. 監査ログの記録と参照 API（運用ゲート / backend）。
+3. API 端末セッション認証層（README 残存限界の解消 / backend + frontend）。
+4. ソーシャルリカバリーによる機種変更・端末紛失時の復旧（Phase 1 安全機構ゲート / backend + frontend）。
+5. 端末失効・復旧の利用者フロー UI（frontend）。
+
+実装順: 1 → 2 → 3 → 4 → 5（docs を先に、セキュリティ核を認証 → 復旧の順で積む）。1 件ずつ Issue 化して PR で完了させる。
+
+#### 検証手順
+
+- 各 Issue の受け入れ基準を満たす結合テスト（既存 `scripts/e2e-phase1.ts` を拡張）。
+- `make before-commit` と各 workspace の test / typecheck / build が Green。
+
+#### 進捗ログ
+
+- 2026-06-27: 現状診断。Phase 1 Web リファレンス実装（PR #10）が完成済みであることを確認。既存ルートを棚卸しし、コード実装可能な Phase 1 残課題 5 件を特定。backlog を GitHub Issue 化し、Issue 1（TRACKING）へ紐付ける。
+
+#### 振り返り
+
+- （各 Issue 完了時に追記する。）
+
 ### Phase 1 Web プロダクトのエンドツーエンド完成 - 2026-06-13
 
 #### 目的
