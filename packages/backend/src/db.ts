@@ -77,6 +77,22 @@ const TABLES: readonly string[] = [
     signature TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`,
+  // 監査証跡。安全上重要なイベントの追記専用ジャーナル。事後追跡（家族内不正・
+  // インシデント対応）の根拠にする。独立したログとして FK を張らず、参照は ID の
+  // 非正規化保持に留める。circle に紐付かないイベント（メンバー / 端末登録）は
+  // circle_id を NULL にする。summary は固定の最小ラベルとし、金額・送金先・理由・
+  // 件名・秘密鍵などの機微情報を平文で残さない。INSERT のみで UPDATE / DELETE は
+  // 行わない（追記専用）。設計判断の正本は docs/adr/0003-audit-log-append-only.md。
+  `CREATE TABLE IF NOT EXISTS audit_log (
+    id TEXT PRIMARY KEY,
+    circle_id TEXT,
+    actor_member_id TEXT,
+    event_type TEXT NOT NULL,
+    target_type TEXT,
+    target_id TEXT,
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
 ];
 
 export function migrate(db: Database): void {

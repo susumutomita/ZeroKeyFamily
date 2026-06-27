@@ -1,5 +1,45 @@
 # Plan.md
 
+### 監査ログの記録と参照 API（Issue 12） - 2026-06-27
+
+#### 目的
+
+安全上重要なイベント（メンバー / 端末登録・端末失効・招待発行 / 確認 / 取消・確認要求作成 / 承認 / 拒否 / 取消 / 検証失敗 / リプレイ拒否・緊急停止 / 解除）を追記専用で記録し、家族メンバーが自分の家族の証跡を参照できる API を追加する。運用ゲート（インシデント対応）と脅威モデル（家族内不正・事後追跡）の前提を満たす。Issue: https://github.com/susumutomita/ZeroKeyFamily/issues/12 。
+
+#### 制約
+
+- 実 SQLite・実 HTTP（モック禁止）。TDD・日本語 BDD・カバレッジ維持。
+- 機微情報（金額・送金先・理由・件名・秘密鍵）を平文で証跡に残さない。要約は固定の最小ラベルとし、対象は ID で参照する。
+- 追記専用。audit_log への UPDATE / DELETE を実装しない。
+- 参照 API は既存の `isCircleMember` 認可規約を踏襲し、非メンバーへ 403 を返す。
+- ゲート（architecture-harness → make before-commit → backend test/typecheck/build → e2e）を全 Green にするまで未完了。
+
+#### タスク
+
+1. `packages/backend/src/db.ts` に追記専用 `audit_log` テーブルを追加。
+2. `packages/backend/src/app.ts` に `appendAudit` ヘルパーと各イベント点での記録を追加。
+3. `GET /api/circles/:id/audit`（メンバー限定・時系列）を追加。
+4. 日本語 BDD テスト（記録・非メンバー 403・追記専用・機微情報の非格納・時系列順）を追加。
+5. `scripts/e2e-phase1.ts` に証跡アサーションを追加。
+
+#### 検証手順
+
+- `bun test`（backend）が Green。
+- `bun scripts/e2e-phase1.ts` が核ジャーニー後に期待した証跡を返す。
+- `make before-commit` と backend の typecheck / build が Green。
+
+#### 進捗ログ
+
+- 2026-06-27: ブランチ `claude/phase1-audit-log` で着手。既存ルートの棚卸しから記録すべきイベント点を確定。
+- 2026-06-27: TDD で実装。`audit_log` 追記専用テーブル、`appendAudit` ヘルパー、各イベント点での記録、`GET /api/circles/:id/audit`（メンバー限定・時系列）を追加。backend テスト 87 件・typecheck・build・biome・architecture-harness・e2e（証跡アサーション 4 件）が Green。
+- 2026-06-27: /security-review は指摘 0 件。/code-review（high・workflow）で 10 件を検出し対応。監査整合性: 認可拒否した応答試行を `request_response_denied` で記録（自己承認など家族内不正の追跡）、端末失効・招待取消の actor 誤帰属を NULL に修正（実行者の確定は Issue 13 のセッション認証へ）、`circle_released` の targetId を circle.id に統一。品質: 読み取り認可を `requireCircleMember` ヘルパーへ集約（members / requests / audit の三重化を解消）、`circle_released` の summary を固定ラベル化、監査参照に既定 100・上限 500 の limit を追加、UUID と偶発衝突する機微情報テストの判定を summary 限定へ修正。設計記録: ADR-0003（追記専用・FK 非依存）を追加。harness による追記専用の機械検証と、失効 / 招待取消エンドポイントの呼び出し元認可はフォローアップ化。
+
+#### 振り返り
+
+- **問題**: 監査ログが「正常系イベント」のみを記録し、認可で拒否した不正試行（自己承認など）を残していなかった。また認証層が無い失効 / 取消エンドポイントで actor を被害者・招待者と断定し、証跡が実行者を誤って示していた。読み取り認可ロジックが 3 エンドポイントに重複していた。
+- **根本原因**: 「記録すべきイベント」を成功操作中心に列挙し、脅威モデルの主目的（不正試行の事後追跡）を網羅していなかった。actor の意味（実行者）と、認証層が無い現状（呼び出し元を証明できない）の整合を初版で詰めていなかった。
+- **予防策**: 認可拒否を監査対象に含め、actor を断定できない操作は NULL とし限界を ADR と Issue 13 へ明示。読み取り認可をヘルパーへ一本化し drift を防止。追記専用の機械検証はフォローアップ（harness invariant）として残す。
+
 ### Phase 1 Web プロダクトのエンドツーエンド完成 - 2026-06-13
 
 #### 目的

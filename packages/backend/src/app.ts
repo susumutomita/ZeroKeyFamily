@@ -22,6 +22,10 @@ const REMOTE_INVITE_WAIT_MS = 48 * 60 * 60_000;
 const MIN_DEADLINE_OFFSET_MS = 10 * 60_000;
 const MAX_DEADLINE_OFFSET_MS = 24 * 60 * 60_000;
 
+// 監査証跡の 1 ページ既定件数と上限。追記専用ログの無制限読み取りを避ける。
+const DEFAULT_AUDIT_LIMIT = 100;
+const MAX_AUDIT_LIMIT = 500;
+
 const TERMINAL_REQUEST_STATUSES = new Set([
   'approved',
   'rejected',
@@ -88,8 +92,44 @@ interface StopEventRow {
   created_at: string;
 }
 
+interface AuditRow {
+  id: string;
+  circle_id: string | null;
+  actor_member_id: string | null;
+  event_type: string;
+  target_type: string | null;
+  target_id: string | null;
+  summary: string;
+  created_at: string;
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+// 監査証跡の取得件数。未指定・不正値は既定、上限を超える指定は上限に丸める。
+function clampLimit(raw: string | undefined): number {
+  if (raw === undefined) {
+    return DEFAULT_AUDIT_LIMIT;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_AUDIT_LIMIT;
+  }
+  return Math.min(parsed, MAX_AUDIT_LIMIT);
+}
+
+function toAuditJson(row: AuditRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    circleId: row.circle_id,
+    actorMemberId: row.actor_member_id,
+    eventType: row.event_type,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    summary: row.summary,
+    createdAt: row.created_at,
+  };
 }
 
 function toRequestJson(row: RequestRow): Record<string, unknown> {
@@ -225,6 +265,61 @@ export function createApp(deps: AppDeps): Hono {
     );
   };
 
+  // 追記専用の監査証跡。機微情報を summary に含めないこと（target_id で参照する）。
+  const appendAudit = (entry: {
+    circleId: string | null;
+    actorMemberId: string | null;
+    eventType: string;
+    targetType: string | null;
+    targetId: string | null;
+    summary: string;
+  }): void => {
+    db.run(
+      `INSERT INTO audit_log
+       (id, circle_id, actor_member_id, event_type, target_type, target_id, summary, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        crypto.randomUUID(),
+        entry.circleId,
+        entry.actorMemberId,
+        entry.eventType,
+        entry.targetType,
+        entry.targetId,
+        entry.summary,
+        nowIso(),
+      ]
+    );
+  };
+
+  const circlesOfMember = (memberId: string): string[] =>
+    db
+      .query<{ circle_id: string }, [string]>(
+        `SELECT circle_id FROM circle_members
+         WHERE member_id = ? AND left_at IS NULL`
+      )
+      .all(memberId)
+      .map((row) => row.circle_id);
+
+  // 家族内データ（名簿・確認履歴・監査証跡）の読み取り認可を一箇所に集約する。
+  // 家族コード(circleId)だけを知る非メンバーへ露出しないよう、呼び出し元
+  // memberId が当該 circle の現メンバーであることを要求する。3 つの読み取り
+  // エンドポイントで挙動を揃え、片方だけ規約が変わる drift を防ぐ。
+  type CircleMemberGuard =
+    | { ok: true; circle: CircleRow }
+    | { ok: false; res: Response };
+  const requireCircleMember = (c: Context): CircleMemberGuard => {
+    const circleId = c.req.param('id');
+    const circle = isNonEmptyString(circleId) ? getCircle(circleId) : null;
+    if (!circle) {
+      return { ok: false, res: c.json({ error: 'circle_not_found' }, 404) };
+    }
+    const callerId = c.req.query('memberId');
+    if (!isNonEmptyString(callerId) || !isCircleMember(circle.id, callerId)) {
+      return { ok: false, res: c.json({ error: 'not_circle_member' }, 403) };
+    }
+    return { ok: true, circle };
+  };
+
   const readJson = async (
     c: Context
   ): Promise<Record<string, unknown> | null> => {
@@ -262,6 +357,23 @@ export function createApp(deps: AppDeps): Hono {
        VALUES (?, ?, ?, 'active', ?)`,
       [deviceId, memberId, publicKey, createdAt]
     );
+    // 登録は circle 加入前に起こるため circle には紐付けない。
+    appendAudit({
+      circleId: null,
+      actorMemberId: memberId,
+      eventType: 'member_registered',
+      targetType: 'member',
+      targetId: memberId,
+      summary: 'メンバーを登録',
+    });
+    appendAudit({
+      circleId: null,
+      actorMemberId: memberId,
+      eventType: 'device_registered',
+      targetType: 'device',
+      targetId: deviceId,
+      summary: '端末を登録',
+    });
     return c.json(
       {
         member: { id: memberId, name },
@@ -296,6 +408,14 @@ export function createApp(deps: AppDeps): Hono {
        VALUES (?, ?, ?)`,
       [circleId, creatorMemberId, createdAt]
     );
+    appendAudit({
+      circleId,
+      actorMemberId: creatorMemberId,
+      eventType: 'circle_created',
+      targetType: 'circle',
+      targetId: circleId,
+      summary: '家族グループを作成',
+    });
     return c.json({ circle: { id: circleId, name, status: 'normal' } }, 201);
   });
 
@@ -319,16 +439,11 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- 家族メンバー一覧（表示名つき。確認要求の宛先候補に使う） ---
   app.get('/api/circles/:id/members', (c) => {
-    const circle = getCircle(c.req.param('id'));
-    if (!circle) {
-      return c.json({ error: 'circle_not_found' }, 404);
+    const guard = requireCircleMember(c);
+    if (!guard.ok) {
+      return guard.res;
     }
-    // 家族コード(circleId)を知るだけの非メンバーに名簿・履歴を露出しない。
-    // 呼び出し元 memberId が当該 circle のメンバーであることを要求する。
-    const callerId = c.req.query('memberId');
-    if (!isNonEmptyString(callerId) || !isCircleMember(circle.id, callerId)) {
-      return c.json({ error: 'not_circle_member' }, 403);
-    }
+    const circle = guard.circle;
     const members = db
       .query<{ id: string; name: string }, [string]>(
         `SELECT m.id AS id, m.name AS name
@@ -342,15 +457,12 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- 確認要求の一覧（受信箱・送信箱）。読み取り時に状態を確定する。 ---
   app.get('/api/circles/:id/requests', (c) => {
-    const circle = getCircle(c.req.param('id'));
-    if (!circle) {
-      return c.json({ error: 'circle_not_found' }, 404);
-    }
     // 確認履歴（金額・送金先・理由）は家族内に限定する。非メンバーには返さない。
-    const callerId = c.req.query('memberId');
-    if (!isNonEmptyString(callerId) || !isCircleMember(circle.id, callerId)) {
-      return c.json({ error: 'not_circle_member' }, 403);
+    const guard = requireCircleMember(c);
+    if (!guard.ok) {
+      return guard.res;
     }
+    const circle = guard.circle;
     const targetMemberId = c.req.query('targetMemberId');
     const requesterMemberId = c.req.query('requesterMemberId');
     const conditions = ['circle_id = ?'];
@@ -431,6 +543,14 @@ export function createApp(deps: AppDeps): Hono {
         confirmableAt,
       ]
     );
+    appendAudit({
+      circleId,
+      actorMemberId: inviterMemberId,
+      eventType: 'invite_created',
+      targetType: 'invite',
+      targetId: inviteId,
+      summary: kind === 'remote' ? '遠隔招待を発行' : '対面招待を発行',
+    });
     return c.json(
       { invite: { id: inviteId, circleId, kind, status, confirmableAt } },
       201
@@ -472,6 +592,14 @@ export function createApp(deps: AppDeps): Hono {
        WHERE id = ?`,
       [inviteeMemberId, invite.id]
     );
+    appendAudit({
+      circleId: invite.circle_id,
+      actorMemberId: inviteeMemberId,
+      eventType: 'invite_confirmed',
+      targetType: 'invite',
+      targetId: invite.id,
+      summary: '招待を承認し家族に参加',
+    });
     return c.json({
       invite: {
         id: invite.id,
@@ -490,6 +618,17 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'invite_already_confirmed' }, 409);
     }
     db.run("UPDATE invites SET status = 'cancelled' WHERE id = ?", [invite.id]);
+    // 取消エンドポイントは呼び出し元を認証しないため、actor を招待者と
+    // 断定しない（誤帰属を避ける）。端末セッション認証の導入時に actor を
+    // 確定する（https://github.com/susumutomita/ZeroKeyFamily/issues/13）。
+    appendAudit({
+      circleId: invite.circle_id,
+      actorMemberId: null,
+      eventType: 'invite_cancelled',
+      targetType: 'invite',
+      targetId: invite.id,
+      summary: '招待を取り消し',
+    });
     return c.json({ invite: { id: invite.id, status: 'cancelled' } });
   });
 
@@ -592,6 +731,14 @@ export function createApp(deps: AppDeps): Hono {
     if (!row) {
       return c.json({ error: 'internal_error' }, 500);
     }
+    appendAudit({
+      circleId,
+      actorMemberId: requesterMemberId,
+      eventType: 'request_created',
+      targetType: 'request',
+      targetId: id,
+      summary: '確認要求を作成',
+    });
     return c.json({ request: toRequestJson(row) }, 201);
   });
 
@@ -640,10 +787,24 @@ export function createApp(deps: AppDeps): Hono {
     if (!device) {
       return c.json({ error: 'device_not_found' }, 404);
     }
+    // 認可で拒否した応答の試みも証跡へ残す。自己承認・対象外メンバーの承認など
+    // 家族内不正の試行を事後追跡できるようにする（要約は固定の不正試行ラベル）。
+    const auditResponseDenied = (summary: string): void => {
+      appendAudit({
+        circleId: request.circle_id,
+        actorMemberId: device.member_id,
+        eventType: 'request_response_denied',
+        targetType: 'request',
+        targetId: request.id,
+        summary,
+      });
+    };
     if (!isCircleMember(request.circle_id, device.member_id)) {
+      auditResponseDenied('非メンバーの応答を拒否');
       return c.json({ error: 'not_circle_member' }, 403);
     }
     if (device.member_id === request.requester_member_id) {
+      auditResponseDenied('依頼者自身の応答を拒否');
       return c.json({ error: 'requester_cannot_respond' }, 403);
     }
     // 承認は target_member_id 本人の登録端末のみ有効。target 以外のメンバーは
@@ -652,9 +813,11 @@ export function createApp(deps: AppDeps): Hono {
     // （user-journeys.md フロー 4「いずれかが拒否」）。
     if (kind === 'approve' && device.member_id !== request.target_member_id) {
       if (request.high_risk_second_approval !== 1) {
+        auditResponseDenied('対象外メンバーの承認を拒否');
         return c.json({ error: 'not_target_member' }, 403);
       }
       if (!hasVerifiedApprovalFrom(request.id, request.target_member_id)) {
+        auditResponseDenied('対象本人の承認前の第 2 承認を拒否');
         return c.json({ error: 'target_approval_required' }, 403);
       }
     }
@@ -665,6 +828,14 @@ export function createApp(deps: AppDeps): Hono {
       )
       .get(request.id, signature);
     if (duplicated) {
+      appendAudit({
+        circleId: request.circle_id,
+        actorMemberId: device.member_id,
+        eventType: 'request_replay_rejected',
+        targetType: 'request',
+        targetId: request.id,
+        summary: '同一署名の再送を拒否',
+      });
       return c.json(
         { error: 'replayed_signature', status: request.status },
         409
@@ -688,6 +859,14 @@ export function createApp(deps: AppDeps): Hono {
     if (device.status !== 'active') {
       recordResponse(request.id, device.id, kind, payload, signature, false);
       setRequestStatus(request.id, 'verification_failed');
+      appendAudit({
+        circleId: request.circle_id,
+        actorMemberId: device.member_id,
+        eventType: 'request_verification_failed',
+        targetType: 'request',
+        targetId: request.id,
+        summary: '失効端末の署名を拒否',
+      });
       return c.json(
         { error: 'device_revoked', status: 'verification_failed' },
         422
@@ -710,6 +889,14 @@ export function createApp(deps: AppDeps): Hono {
     if (!verified) {
       recordResponse(request.id, device.id, kind, payload, signature, false);
       setRequestStatus(request.id, 'verification_failed');
+      appendAudit({
+        circleId: request.circle_id,
+        actorMemberId: device.member_id,
+        eventType: 'request_verification_failed',
+        targetType: 'request',
+        targetId: request.id,
+        summary: '署名検証に失敗',
+      });
       return c.json(
         {
           error: 'signature_verification_failed',
@@ -721,8 +908,25 @@ export function createApp(deps: AppDeps): Hono {
     recordResponse(request.id, device.id, kind, payload, signature, true);
     if (kind === 'reject') {
       setRequestStatus(request.id, 'rejected');
+      appendAudit({
+        circleId: request.circle_id,
+        actorMemberId: device.member_id,
+        eventType: 'request_rejected',
+        targetType: 'request',
+        targetId: request.id,
+        summary: '確認要求を拒否',
+      });
       return c.json({ status: 'rejected' });
     }
+    // 検証済みの承認署名を記録する（待機・収集中でも承認者の署名は監査対象）。
+    appendAudit({
+      circleId: request.circle_id,
+      actorMemberId: device.member_id,
+      eventType: 'request_approved',
+      targetType: 'request',
+      targetId: request.id,
+      summary: '確認要求を承認',
+    });
     if (latest.status === 'waiting') {
       // 待機中の追加承認は状態を変えない（approved を先行させない）。
       return c.json({
@@ -776,6 +980,14 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'cannot_cancel', status: request.status }, 409);
     }
     setRequestStatus(request.id, 'invalidated');
+    appendAudit({
+      circleId: request.circle_id,
+      actorMemberId: requesterMemberId,
+      eventType: 'request_cancelled',
+      targetType: 'request',
+      targetId: request.id,
+      summary: '確認要求を取り消し',
+    });
     return c.json({ status: 'invalidated' });
   });
 
@@ -789,6 +1001,25 @@ export function createApp(deps: AppDeps): Hono {
       "UPDATE devices SET status = 'revoked', revoked_at = ? WHERE id = ?",
       [nowIso(), device.id]
     );
+    // 失効は端末（= その所有メンバー）の標準を全家族で無効化するため、所属する
+    // 各家族の証跡へ記録する。どの家族にも属さない端末は circle 非紐付けで記録する。
+    // 失効エンドポイントは呼び出し元を認証しないため actor を所有者と断定しない
+    // （被害者を実行者と誤帰属しない）。誰が失効したかは端末セッション認証で
+    // 確定する（https://github.com/susumutomita/ZeroKeyFamily/issues/13）。
+    // 影響を受けた端末・メンバーは targetId（端末 ID）から辿れる。
+    const circles = circlesOfMember(device.member_id);
+    const auditTargets: (string | null)[] =
+      circles.length > 0 ? circles : [null];
+    for (const auditCircleId of auditTargets) {
+      appendAudit({
+        circleId: auditCircleId,
+        actorMemberId: null,
+        eventType: 'device_revoked',
+        targetType: 'device',
+        targetId: device.id,
+        summary: '端末を失効',
+      });
+    }
     return c.json({ device: { id: device.id, status: 'revoked' } });
   });
 
@@ -819,6 +1050,14 @@ export function createApp(deps: AppDeps): Hono {
       [stopEventId, circle.id, memberId, nowIso()]
     );
     db.run("UPDATE circles SET status = 'stopped' WHERE id = ?", [circle.id]);
+    appendAudit({
+      circleId: circle.id,
+      actorMemberId: memberId,
+      eventType: 'circle_stopped',
+      targetType: 'circle',
+      targetId: circle.id,
+      summary: '緊急停止を発動',
+    });
     return c.json({
       circle: { id: circle.id, status: 'stopped' },
       stopEvent: { id: stopEventId },
@@ -902,7 +1141,39 @@ export function createApp(deps: AppDeps): Hono {
       );
     }
     db.run("UPDATE circles SET status = 'normal' WHERE id = ?", [circle.id]);
+    // 解除は複数メンバーの署名で成立するため単一 actor を持たない。
+    // targetId は circle_stopped と揃えて circle.id にする（targetType に整合）。
+    appendAudit({
+      circleId: circle.id,
+      actorMemberId: null,
+      eventType: 'circle_released',
+      targetType: 'circle',
+      targetId: circle.id,
+      summary: '緊急停止を解除',
+    });
     return c.json({ circle: { id: circle.id, status: 'normal' } });
+  });
+
+  // --- 監査証跡の参照（家族メンバー限定・時系列） ---
+  app.get('/api/circles/:id/audit', (c) => {
+    // 証跡は家族内に限定する。家族コードのみ知る非メンバーへ露出しない。
+    const guard = requireCircleMember(c);
+    if (!guard.ok) {
+      return guard.res;
+    }
+    const circle = guard.circle;
+    // 追記専用ログは無制限に伸びるため、既定で直近 limit 件に絞る。表示は古い順。
+    // 直近 limit 件を新しい順で取得してから反転し、件数を上限で抑える。
+    const limit = clampLimit(c.req.query('limit'));
+    const rows = db
+      .query<AuditRow, [string, number]>(
+        `SELECT * FROM audit_log WHERE circle_id = ?
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?`
+      )
+      .all(circle.id, limit)
+      .reverse();
+    return c.json({ entries: rows.map(toAuditJson) });
   });
 
   return app;
