@@ -93,6 +93,23 @@ const TABLES: readonly string[] = [
     summary TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`,
+  // 端末セッション認証（ADR-0004）。チャレンジ nonce は単回使用（consumed）。
+  // 設計の正本は docs/adr/0004-device-session-authentication.md。
+  `CREATE TABLE IF NOT EXISTS auth_challenges (
+    nonce TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES devices(id),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS auth_sessions (
+    token TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES devices(id),
+    member_id TEXT NOT NULL REFERENCES members(id),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0
+  )`,
 ];
 
 export function migrate(db: Database): void {

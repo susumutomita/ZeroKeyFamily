@@ -4,6 +4,7 @@ import type { Hono } from 'hono';
 import { createApp } from './app';
 import type { Clock } from './clock';
 import {
+  canonicalAuthChallenge,
   canonicalReleasePayload,
   canonicalResponsePayload,
   generateEd25519KeyPair,
@@ -1706,5 +1707,256 @@ describe('招待確認のレスポンス', () => {
     };
     expect(body.invite.status).toBe('confirmed');
     expect(body.invite.circleId).toBe(circle.id);
+  });
+});
+
+interface ChallengeJson {
+  nonce: string;
+  expiresAt: string;
+}
+
+interface SessionJson {
+  token: string;
+  memberId: string;
+  expiresAt: string;
+}
+
+async function getChallenge(
+  app: Hono,
+  deviceId: string
+): Promise<ChallengeJson> {
+  const res = await postJson(app, '/api/auth/challenge', { deviceId });
+  expect(res.status).toBe(201);
+  return (await res.json()) as ChallengeJson;
+}
+
+async function establishSession(
+  app: Hono,
+  user: TestUser
+): Promise<SessionJson> {
+  const challenge = await getChallenge(app, user.deviceId);
+  const signature = await signEd25519(
+    user.privateKey,
+    canonicalAuthChallenge({
+      deviceId: user.deviceId,
+      memberId: user.memberId,
+      nonce: challenge.nonce,
+    })
+  );
+  const res = await postJson(app, '/api/auth/session', {
+    deviceId: user.deviceId,
+    nonce: challenge.nonce,
+    signature,
+  });
+  expect(res.status).toBe(201);
+  return (await res.json()) as SessionJson;
+}
+
+describe('端末セッション認証（ADR-0004 Phase A）', () => {
+  it('登録端末にチャレンジ nonce を発行する', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const challenge = await getChallenge(ctx.app, user.deviceId);
+    expect(challenge.nonce.length).toBeGreaterThan(0);
+    expect(Number.isNaN(Date.parse(challenge.expiresAt))).toBe(false);
+  });
+
+  it('存在しない端末のチャレンジは 404 を返す', async () => {
+    const ctx = createTestContext();
+    const res = await postJson(ctx.app, '/api/auth/challenge', {
+      deviceId: 'missing-device',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('失効済み端末のチャレンジ要求は 403 を返す', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    await postJson(ctx.app, `/api/devices/${user.deviceId}/revoke`, {});
+    const res = await postJson(ctx.app, '/api/auth/challenge', {
+      deviceId: user.deviceId,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('正しい端末署名でセッショントークンを確立する', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const session = await establishSession(ctx.app, user);
+    expect(session.token.length).toBeGreaterThan(0);
+    expect(session.memberId).toBe(user.memberId);
+  });
+
+  it('不正な署名はセッションを確立しない', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const challenge = await getChallenge(ctx.app, user.deviceId);
+    // nonce を改変したペイロードへ署名する（チャレンジと不一致）。
+    const signature = await signEd25519(
+      user.privateKey,
+      canonicalAuthChallenge({
+        deviceId: user.deviceId,
+        memberId: user.memberId,
+        nonce: 'forged-nonce',
+      })
+    );
+    const res = await postJson(ctx.app, '/api/auth/session', {
+      deviceId: user.deviceId,
+      nonce: challenge.nonce,
+      signature,
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('失効済み端末はセッションを確立できない', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const challenge = await getChallenge(ctx.app, user.deviceId);
+    await postJson(ctx.app, `/api/devices/${user.deviceId}/revoke`, {});
+    const signature = await signEd25519(
+      user.privateKey,
+      canonicalAuthChallenge({
+        deviceId: user.deviceId,
+        memberId: user.memberId,
+        nonce: challenge.nonce,
+      })
+    );
+    const res = await postJson(ctx.app, '/api/auth/session', {
+      deviceId: user.deviceId,
+      nonce: challenge.nonce,
+      signature,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('同一 nonce の再利用（リプレイ）を拒否する', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const challenge = await getChallenge(ctx.app, user.deviceId);
+    const signature = await signEd25519(
+      user.privateKey,
+      canonicalAuthChallenge({
+        deviceId: user.deviceId,
+        memberId: user.memberId,
+        nonce: challenge.nonce,
+      })
+    );
+    const first = await postJson(ctx.app, '/api/auth/session', {
+      deviceId: user.deviceId,
+      nonce: challenge.nonce,
+      signature,
+    });
+    expect(first.status).toBe(201);
+    const replay = await postJson(ctx.app, '/api/auth/session', {
+      deviceId: user.deviceId,
+      nonce: challenge.nonce,
+      signature,
+    });
+    expect(replay.status).toBe(409);
+  });
+
+  it('期限切れチャレンジを拒否する', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const challenge = await getChallenge(ctx.app, user.deviceId);
+    // チャレンジ TTL（2 分）を超過させる。
+    ctx.clock.advanceMinutes(3);
+    const signature = await signEd25519(
+      user.privateKey,
+      canonicalAuthChallenge({
+        deviceId: user.deviceId,
+        memberId: user.memberId,
+        nonce: challenge.nonce,
+      })
+    );
+    const res = await postJson(ctx.app, '/api/auth/session', {
+      deviceId: user.deviceId,
+      nonce: challenge.nonce,
+      signature,
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('他端末向けに発行された nonce での確立を拒否する', async () => {
+    const ctx = createTestContext();
+    const alice = await registerMember(ctx.app, '花子');
+    const mallory = await registerMember(ctx.app, '部外者');
+    // alice 宛ての nonce を mallory が自分の鍵で使おうとする。
+    const challenge = await getChallenge(ctx.app, alice.deviceId);
+    const signature = await signEd25519(
+      mallory.privateKey,
+      canonicalAuthChallenge({
+        deviceId: mallory.deviceId,
+        memberId: mallory.memberId,
+        nonce: challenge.nonce,
+      })
+    );
+    const res = await postJson(ctx.app, '/api/auth/session', {
+      deviceId: mallory.deviceId,
+      nonce: challenge.nonce,
+      signature,
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('有効なトークンで /api/auth/me がメンバーを返す', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const session = await establishSession(ctx.app, user);
+    const res = await ctx.app.request('/api/auth/me', {
+      headers: { authorization: `Bearer ${session.token}` },
+    });
+    expect(res.status).toBe(200);
+    const me = (await res.json()) as { memberId: string; deviceId: string };
+    expect(me.memberId).toBe(user.memberId);
+    expect(me.deviceId).toBe(user.deviceId);
+  });
+
+  it('トークンなしの /api/auth/me は 401 を返す', async () => {
+    const ctx = createTestContext();
+    const res = await ctx.app.request('/api/auth/me');
+    expect(res.status).toBe(401);
+  });
+
+  it('未知のトークンの /api/auth/me は 401 を返す', async () => {
+    const ctx = createTestContext();
+    const res = await ctx.app.request('/api/auth/me', {
+      headers: { authorization: 'Bearer unknown-token' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('Bearer 以外の Authorization ヘッダは 401 を返す', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const session = await establishSession(ctx.app, user);
+    // スキームが Bearer でないトークンは受理しない。
+    const res = await ctx.app.request('/api/auth/me', {
+      headers: { authorization: `Token ${session.token}` },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('セッション確立後に端末が失効するとそのセッションは無効になる', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const session = await establishSession(ctx.app, user);
+    await postJson(ctx.app, `/api/devices/${user.deviceId}/revoke`, {});
+    const res = await ctx.app.request('/api/auth/me', {
+      headers: { authorization: `Bearer ${session.token}` },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('期限切れセッションは無効になる', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const session = await establishSession(ctx.app, user);
+    // セッション TTL（12 時間）を超過させる。
+    ctx.clock.advanceHours(13);
+    const res = await ctx.app.request('/api/auth/me', {
+      headers: { authorization: `Bearer ${session.token}` },
+    });
+    expect(res.status).toBe(401);
   });
 });
