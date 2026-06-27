@@ -1354,6 +1354,331 @@ describe('確認要求の一覧', () => {
   });
 });
 
+interface AuditEntry {
+  id: string;
+  circleId: string | null;
+  actorMemberId: string | null;
+  eventType: string;
+  targetType: string | null;
+  targetId: string | null;
+  summary: string;
+  createdAt: string;
+}
+
+async function getAudit(
+  app: Hono,
+  circleId: string,
+  callerId: string
+): Promise<AuditEntry[]> {
+  const res = await app.request(
+    `/api/circles/${circleId}/audit?memberId=${callerId}`
+  );
+  expect(res.status).toBe(200);
+  return ((await res.json()) as { entries: AuditEntry[] }).entries;
+}
+
+describe('監査ログ', () => {
+  it('家族作成・招待発行・招待確認・確認要求作成を時系列で記録する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx, 2);
+    await createRequest(ctx, family);
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    const types = entries.map((e) => e.eventType);
+    expect(types).toEqual([
+      'circle_created',
+      'invite_created',
+      'invite_confirmed',
+      'request_created',
+    ]);
+  });
+
+  it('確認要求の承認を記録し承認者を actor にする', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    const res = await respondWith(ctx, request, family.target, 'approve');
+    expect(res.status).toBe(200);
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    const approved = entries.find((e) => e.eventType === 'request_approved');
+    expect(approved).toBeDefined();
+    expect(approved?.actorMemberId).toBe(family.target.memberId);
+    expect(approved?.targetId).toBe(request.id);
+  });
+
+  it('確認要求の拒否を記録する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    await respondWith(ctx, request, family.target, 'reject');
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    expect(entries.some((e) => e.eventType === 'request_rejected')).toBe(true);
+  });
+
+  it('確認要求の取り消しを記録する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    await postJson(ctx.app, `/api/requests/${request.id}/cancel`, {
+      requesterMemberId: family.requester.memberId,
+    });
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    expect(entries.some((e) => e.eventType === 'request_cancelled')).toBe(true);
+  });
+
+  it('認可で拒否した応答の試み（依頼者の自己承認）を記録する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    // 依頼者自身が自分の要求を承認しようとする（自己承認の不正試行）。
+    const denied = await respondWith(ctx, request, family.requester, 'approve');
+    expect(denied.status).toBe(403);
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    const denial = entries.find(
+      (e) => e.eventType === 'request_response_denied'
+    );
+    expect(denial).toBeDefined();
+    expect(denial?.actorMemberId).toBe(family.requester.memberId);
+    expect(denial?.targetId).toBe(request.id);
+  });
+
+  it('端末失効を家族の証跡に記録する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    await postJson(
+      ctx.app,
+      `/api/devices/${family.target.deviceId}/revoke`,
+      {}
+    );
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    const revoked = entries.find((e) => e.eventType === 'device_revoked');
+    expect(revoked).toBeDefined();
+    expect(revoked?.targetId).toBe(family.target.deviceId);
+    // 失効エンドポイントは呼び出し元を認証しないため actor は確定しない（null）。
+    expect(revoked?.actorMemberId).toBeNull();
+  });
+
+  it('緊急停止と解除を記録する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const stopRes = await postJson(
+      ctx.app,
+      `/api/circles/${family.circleId}/stop`,
+      { memberId: family.requester.memberId }
+    );
+    const { stopEvent } = (await stopRes.json()) as {
+      stopEvent: { id: string };
+    };
+    const payload = canonicalReleasePayload({
+      circleId: family.circleId,
+      stopEventId: stopEvent.id,
+    });
+    await postJson(ctx.app, `/api/circles/${family.circleId}/release`, {
+      signatures: [
+        {
+          deviceId: family.requester.deviceId,
+          signature: await signEd25519(family.requester.privateKey, payload),
+        },
+        {
+          deviceId: family.target.deviceId,
+          signature: await signEd25519(family.target.privateKey, payload),
+        },
+      ],
+    });
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    const stopped = entries.find((e) => e.eventType === 'circle_stopped');
+    expect(stopped?.actorMemberId).toBe(family.requester.memberId);
+    expect(entries.some((e) => e.eventType === 'circle_released')).toBe(true);
+  });
+
+  it('署名検証の失敗を記録する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    const res = await respondWith(ctx, request, family.target, 'approve', {
+      amount: request.amount + 1,
+    });
+    expect(res.status).toBe(422);
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    expect(
+      entries.some((e) => e.eventType === 'request_verification_failed')
+    ).toBe(true);
+  });
+
+  it('同一署名の再送（リプレイ）の拒否を記録する', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx, 3);
+    await buildApprovedHistory(ctx, family, '実績済み銀行 0000020');
+    const request = await createRequest(ctx, family, {
+      amount: 150000,
+      beneficiary: '実績済み銀行 0000020',
+    });
+    const payload = responsePayloadFor(request, 'approve');
+    const signature = await signEd25519(family.target.privateKey, payload);
+    await postJson(ctx.app, `/api/requests/${request.id}/respond`, {
+      deviceId: family.target.deviceId,
+      kind: 'approve',
+      signature,
+    });
+    const replay = await postJson(
+      ctx.app,
+      `/api/requests/${request.id}/respond`,
+      { deviceId: family.target.deviceId, kind: 'approve', signature }
+    );
+    expect(replay.status).toBe(409);
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    expect(entries.some((e) => e.eventType === 'request_replay_rejected')).toBe(
+      true
+    );
+  });
+
+  it('メンバー登録と端末登録を circle に紐付けずに記録する', async () => {
+    const ctx = createTestContext();
+    const user = await registerMember(ctx.app, '花子');
+    const rows = ctx.db
+      .query<{ event_type: string; circle_id: string | null }, [string]>(
+        'SELECT event_type, circle_id FROM audit_log WHERE actor_member_id = ?'
+      )
+      .all(user.memberId);
+    const types = rows.map((r) => r.event_type);
+    expect(types).toContain('member_registered');
+    expect(types).toContain('device_registered');
+    for (const row of rows) {
+      expect(row.circle_id).toBeNull();
+    }
+  });
+
+  it('非メンバーには証跡を返さず 403 を返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    await createRequest(ctx, family);
+    const outsider = await registerMember(ctx.app, '部外者');
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/audit?memberId=${outsider.memberId}`
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('memberId 未指定は 403 を返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const res = await ctx.app.request(`/api/circles/${family.circleId}/audit`);
+    expect(res.status).toBe(403);
+  });
+
+  it('存在しない家族グループは 404 を返す', async () => {
+    const ctx = createTestContext();
+    const res = await ctx.app.request(
+      '/api/circles/missing/audit?memberId=anyone'
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('証跡は追記専用で過去のエントリを書き換えない', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family);
+    const before = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    await respondWith(ctx, request, family.target, 'approve');
+    const after = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    expect(after.length).toBeGreaterThan(before.length);
+    // 既存エントリ（id と順序）が後続操作で変化しない。
+    expect(after.slice(0, before.length).map((e) => e.id)).toEqual(
+      before.map((e) => e.id)
+    );
+  });
+
+  it('機微情報（金額・送金先・理由・件名）を証跡に残さない', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    const request = await createRequest(ctx, family, {
+      subject: '秘密の件名トークン',
+      beneficiary: '秘密銀行 9999999',
+      reason: '秘密の理由トークン',
+      amount: 123456,
+    });
+    await respondWith(ctx, request, family.target, 'approve');
+    const entries = await getAudit(
+      ctx.app,
+      family.circleId,
+      family.requester.memberId
+    );
+    // 日本語トークンは UUID 等に現れないため全体を直接検査する。
+    const serialized = JSON.stringify(entries);
+    expect(serialized).not.toContain('秘密の件名トークン');
+    expect(serialized).not.toContain('秘密銀行 9999999');
+    expect(serialized).not.toContain('秘密の理由トークン');
+    // 金額は数字列のため UUID（16 進）と偶発衝突する。自由記述である summary
+    // のみを対象に検査する（id/targetId 等は UUID で機微情報を含まない）。
+    for (const entry of entries) {
+      expect(entry.summary).not.toContain('123456');
+    }
+  });
+
+  it('limit で取得件数を絞っても直近を古い順で返す', async () => {
+    const ctx = createTestContext();
+    const family = await setupFamily(ctx);
+    // circle_created / invite_created / invite_confirmed の後に要求を複数作る。
+    for (let i = 0; i < 4; i++) {
+      ctx.clock.advanceMinutes(1);
+      await createRequest(ctx, family);
+    }
+    const res = await ctx.app.request(
+      `/api/circles/${family.circleId}/audit?memberId=${family.requester.memberId}&limit=2`
+    );
+    expect(res.status).toBe(200);
+    const { entries } = (await res.json()) as { entries: AuditEntry[] };
+    expect(entries.length).toBe(2);
+    // 直近 2 件を古い順で返す（末尾が最新）。
+    expect(entries.every((e) => e.eventType === 'request_created')).toBe(true);
+    const times = entries.map((e) => e.createdAt);
+    expect((times[0] ?? '') <= (times[1] ?? '')).toBe(true);
+  });
+});
+
 describe('招待確認のレスポンス', () => {
   it('確認レスポンスは参加した家族グループの circleId を返す', async () => {
     const ctx = createTestContext();

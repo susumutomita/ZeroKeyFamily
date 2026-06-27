@@ -230,6 +230,43 @@ async function main(): Promise<void> {
     const after = await api.getRequest(request3.id);
     check('改ざん署名は応答が拒否される', verificationRejected);
     check('改ざん署名で確認済みにならない', after.status !== 'approved');
+
+    // 10. 監査証跡: 家族メンバーは時系列の証跡を取得でき、機微情報を含まない。
+    //     UI 化は別 Issue のため、ここでは API を直接叩いて契約を確認する。
+    const base = `http://localhost:${server.port}`;
+    const auditRes = await fetch(
+      `${base}/api/circles/${circle.id}/audit?memberId=${hanako.memberId}`
+    );
+    const auditJson = (await auditRes.json()) as {
+      entries: { eventType: string; summary: string }[];
+    };
+    const auditTypes = new Set(auditJson.entries.map((e) => e.eventType));
+    check(
+      '証跡に家族作成・要求作成・承認・拒否・検証失敗が記録される',
+      auditRes.status === 200 &&
+        auditTypes.has('circle_created') &&
+        auditTypes.has('request_created') &&
+        auditTypes.has('request_approved') &&
+        auditTypes.has('request_rejected') &&
+        auditTypes.has('request_verification_failed')
+    );
+    check(
+      '証跡が時系列（古い順）で家族作成から始まる',
+      auditJson.entries[0]?.eventType === 'circle_created'
+    );
+    const auditSerialized = JSON.stringify(auditJson.entries);
+    check(
+      '証跡に送金先・理由などの機微情報が含まれない',
+      !auditSerialized.includes('○○銀行 1234567') &&
+        !auditSerialized.includes('会社のお金をなくしたと言われた')
+    );
+
+    // 11. 非メンバー（家族コードのみ知る者）は証跡を取得できない。
+    const outsider = await register(api, '部外者');
+    const deniedRes = await fetch(
+      `${base}/api/circles/${circle.id}/audit?memberId=${outsider.memberId}`
+    );
+    check('非メンバーは証跡を取得できない', deniedRes.status === 403);
   } finally {
     server.stop(true);
     db.close();
